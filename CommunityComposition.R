@@ -1,5 +1,6 @@
 #Step 1. Load packages
 library(tidyverse)
+library(vegan)
 
 
 #Step 2. Load raw data and divide into metadata and species matrix
@@ -49,17 +50,42 @@ species_long <- species_long %>%
 ##Here things go wrong. My matrix collapses multiple combinations of 
 #species = 0 and cover = 0 into one column. But that loses information.
 
+#This version removes species ID but keeps "dominant X" as column heads
 species_matrix_subplot <- species_long %>%
   pivot_wider(
     id_cols = c(SampleID, StudyID),
     names_from = base,      # base = original Dominant_X_Y column
     values_from = cover,
+    values_fill = NA
+  )
+
+#This version makes a normal matrix. Still the only option for NMDS?
+species_long_sub <- species_long %>%
+  filter(species != "0")
+
+species_matrix <- species_long_sub %>%
+  pivot_wider(
+    id_cols = c(SampleID, StudyID),
+    names_from = species,      # base = original Dominant_X_Y column
+    values_from = cover,
     values_fill = 0
   )
 
 species_mat <- species_matrix %>%
-  select(-StudyID) %>%
+  select(- c(StudyID, SampleID)) %>%
   as.matrix()
+
+#Create NMDS
+species_data <- species_matrix %>%
+  select(- c(StudyID, SampleID))
+
+species_data[is.na(species_data)] <- 0
+
+NMDS_mod <- metaMDS(species_data, distance = "bray", k = 2, trymax = 1000)
+
+NMDS_mod <- metaMDS(species_data, distance = "bray", k = 2, trymax = 1000,
+                    previous.best = NMDS_mod)
+
 
 #Step 3. Load climate and trait data
 TRY_Traits <- read.csv ("TRY_Traits_20251219.csv", sep = ";")
