@@ -1,6 +1,8 @@
 library(terra)
+library(tidyverse)
 
-# ---- A. stack monthly rasters ------------------------------------------------
+#Temp and percipitation data
+
 tif_dir <- "C:/Users/vikto/OneDrive/Skrivbord/Vetenskapliga studier/Fire Ecology/SuccessionAfterBorealFire/WorldClim2_Data/AverageTemp"            # adjust to your folder
 
 tifs  <- list.files(pattern = "\\.tif$", 
@@ -19,8 +21,6 @@ time(rast_stack) <- seq(as.Date("1970-01-15"),
 nlyr(rast_stack)      # should be 372
 unique(format(time(rast_stack), "%Y"))
 
-
-# ---- B. read your sampling sites --------------------------------------------
 sites <- read.csv("Coordinate_Data_20251217.csv", sep=";")               # site_id, lat, lon (WGS84)
 
 names(sites)
@@ -28,8 +28,7 @@ names(sites)
 pts   <- vect(sites, geom = c("Longitude", "Latitude"), crs = "EPSG:4326")
 
 # ---- C. extract cell values --------------------------------------------------
-# choose method = "bilinear" if you want a smooth estimate instead of the
-# center‑of‑cell value
+
 vals <- extract(rast_stack, pts, method = "bilinear")
 # 'vals' columns: ID (row number) + 372 temperature values
 
@@ -88,3 +87,40 @@ out_per <- data.frame(
 
 write.csv(out_per, "site_climatological_percipitation_WorldClim_v2.csv",
           row.names = FALSE)
+
+
+#Soil Moisture Data
+
+nc_files <- list.files(
+  path = "C:/Users/vikto/OneDrive/Skrivbord/Vetenskapliga studier/Fire Ecology/SuccessionAfterBorealFire/SoilMoistureData",
+  pattern = "\\.nc$",
+  full.names = TRUE
+)
+
+# Use merged root-zone soil moisture
+sm_stack <- rast(nc_files, subds = "rzsm_1m")
+
+sm_mean <- mean(sm_stack, na.rm = TRUE)
+
+#Load sites
+sites <- read.csv("C:/Users/vikto/OneDrive/Skrivbord/Vetenskapliga studier/Fire Ecology/SuccessionAfterBorealFire/Coordinate_Data_20251217.csv",
+                  sep = ";")
+
+sites_vect <- vect(
+  sites,
+  geom = c("Longitude", "Latitude"),
+  crs = "EPSG:4326"
+)
+
+#Check that coordinate system match
+crs(sm_mean)
+
+sites_vect <- project(sites_vect, crs(sm_mean))
+
+#Extract soil mositure data
+sm_sites <- terra::extract(sm_mean, sites_vect)
+
+#Combine with coordinate data
+results <- bind_cols(sites, sm_sites)
+
+head(results)
