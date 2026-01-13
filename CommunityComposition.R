@@ -6,6 +6,7 @@ library(car)
 library(ggeffects)
 library(performance)
 library(grid)
+library(ggcorrplot)
 
 #Step 2. Load raw data and divide into metadata and species matrix
 df <- read.csv ("Clean_Data.csv", sep = ";")
@@ -93,6 +94,16 @@ metadata_clean$YSF_interval <- factor(
 
 metadata_clean <- metadata_clean %>%
   mutate(across(c("Continent", "Fire_Int_Groups"), as.factor))
+
+#Check collinearity of continuous variables
+
+#Plant_Div due to high correlations
+pond_corr <- metadata_clean %>% 
+  select(SWI, Avg_Temp, AvgPer, Latitude) %>%
+  cor(use = "pairwise.complete.obs")  # Avoids NA issues
+
+# Plot the correlation matrix
+ggcorrplot(pond_corr, lab = TRUE, type = "lower", hc.order = TRUE)
 
 #Split dataset into trees/shrubs, groundlayer plants, and mosses
 
@@ -340,7 +351,8 @@ dist_herb <- vegdist(Herb_clean, method = "bray")
 ###Fit permanova model
 Permanova_herb <- adonis2(dist_herb ~ Continent*Years_since_fire*Fire_Int_Groups +
                             Avg_Temp +
-                            AvgPer,
+                            AvgPer +
+                            Latitude,
                           data=metadata_herb,
                           permutations=permutations, method="bray")
 

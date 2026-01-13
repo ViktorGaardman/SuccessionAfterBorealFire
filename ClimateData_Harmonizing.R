@@ -117,10 +117,38 @@ crs(sm_mean)
 
 sites_vect <- project(sites_vect, crs(sm_mean))
 
-#Extract soil mositure data
+
+# Identify cells with valid data
+valid_cells <- which(!is.na(values(sm_mean)))
+
+# Get coordinates of valid raster cells
+valid_xy <- xyFromCell(sm_mean, valid_cells)
+
+# Extract values at original points
 sm_sites <- terra::extract(sm_mean, sites_vect)
+
+# Identify which points are NA
+na_points <- which(is.na(sm_sites[, 2]))
+
+#Replace NA values with nearest cell
+if (length(na_points) > 0) {
+  
+  site_xy <- crds(sites_vect)[na_points, ]
+  
+  # For each NA point, find nearest valid raster cell
+  nearest_cells <- apply(site_xy, 1, function(pt) {
+    dists <- sqrt((valid_xy[,1] - pt[1])^2 + (valid_xy[,2] - pt[2])^2)
+    valid_cells[which.min(dists)]
+  })
+  
+  # Extract values from nearest valid cells
+  sm_sites[na_points, 2] <- values(sm_mean)[nearest_cells]
+}
+
 
 #Combine with coordinate data
 results <- bind_cols(sites, sm_sites)
 
 head(results)
+
+write.csv(results, file = "SoilMoistureData.csv")
