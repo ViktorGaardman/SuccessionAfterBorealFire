@@ -8,6 +8,7 @@ library(performance)
 library(grid)
 library(ggcorrplot)
 library(patchwork)
+library(writexl)
 
 #Step 2. Load raw data and divide into metadata and species matrix
 df <- read.csv ("Clean_Data.csv", sep = ";")
@@ -18,15 +19,15 @@ metadata <- df %>%
 metadata <- metadata[,1:20]
 
 species_raw <- df %>%
-  select(StudyID, RowID, contains("postfire")) %>%
+  select(StudyID, RowID, Continent, contains("postfire")) %>%
   select(
-    StudyID, RowID,
+    StudyID, RowID, Continent,
     matches("_postfire$|_postfire_cover$")
   )
 
 
 species_names <- species_raw %>%
-  select(RowID, StudyID, matches("_postfire$")) %>%
+  select(RowID, StudyID, Continent, matches("_postfire$")) %>%
   pivot_longer(
     cols = matches("_postfire$"),
     names_to = "base",
@@ -35,7 +36,7 @@ species_names <- species_raw %>%
   )
 
 species_cover <- species_raw %>%
-  select(RowID, StudyID, matches("_postfire_cover$")) %>%
+  select(RowID, StudyID, Continent, matches("_postfire_cover$")) %>%
   pivot_longer(
     cols = matches("_postfire_cover$"),
     names_to = "base",
@@ -46,7 +47,7 @@ species_cover <- species_raw %>%
 species_long <- left_join(
   species_names,
   species_cover,
-  by = c("RowID", "StudyID", "base")
+  by = c("Continent", "RowID", "StudyID", "base")
 )
 
 species_long <- species_long %>%
@@ -97,8 +98,6 @@ metadata_clean <- metadata_clean %>%
   mutate(across(c("Continent", "Fire_Int_Groups"), as.factor))
 
 #Check collinearity of continuous variables
-
-#Plant_Div due to high correlations
 pond_corr <- metadata_clean %>% 
   select(SWI, Avg_Temp, AvgPer, Latitude) %>%
   cor(use = "pairwise.complete.obs")  # Avoids NA issues
@@ -149,6 +148,30 @@ Mosses_long <- species_long %>%
 
 
 #TREES
+
+##Permanova with StudyID as a random factor
+permutations <- with(metadata_tree, how(nperm=999, blocks = StudyID.x))
+
+#Calculate distance matrix
+dist_tree <- vegdist(Tree_clean, method = "bray")
+
+###Fit permanova model
+Permanova_tree <- adonis2(dist_tree ~Continent*Years_since_fire*Fire_Int_Groups +
+                            Avg_Temp*Cont +
+                            SWI + 
+                            Latitude +
+                            AvgPer,
+                          data=metadata_tree,
+                          permutations=permutations, method="bray")
+
+Permanova_tree
+
+#Split by Continent
+Tree_EU <- Trees_long %>%
+  filter(Continent == "Eurasia")
+Tree_NA <- Trees_long %>%
+  filter(Continent == "North_America")
+
 Tree_matrix <- Trees_long %>%
   pivot_wider(
     id_cols = c(RowID, StudyID),
@@ -156,6 +179,7 @@ Tree_matrix <- Trees_long %>%
     values_from = cover,
     values_fill = 0
   )
+
 
 #Create NMDS
 Tree_cols <- setdiff(names(Tree_matrix), c("RowID", "StudyID"))
@@ -173,18 +197,20 @@ Tree_info <- Tree_filter %>%
 Tree_clean <- Tree_filter %>%
   select(- c(StudyID, RowID))
 
-NMDS_tree <- metaMDS(Tree_clean, distance = "bray", k = 2, trymax = 1000)
+NMDS_tree_EU <- metaMDS(Tree_clean, distance = "bray", k = 2, trymax = 1000)
 
-NMDS_tree <- metaMDS(Tree_clean, distance = "bray", k = 2, trymax = 1000,
-                    previous.best = NMDS_tree)
+NMDS_tree_EU <- metaMDS(Tree_clean, distance = "bray", k = 2, trymax = 1000,
+                    previous.best = NMDS_tree_EU)
 
 #extract the site scores
-datascores_T = as.data.frame(scores(NMDS_tree)$sites)  
+datascores_T_EU = as.data.frame(scores(NMDS_tree_EU)$sites)  
 
 #add metadata
-datascores_T$Fire_Int_Groups = metadata_tree$Fire_Int_Groups
-datascores_T$YSF_interval = metadata_tree$YSF_interval
-datascores_T$SWI = metadata_tree$SWI
+datascores_T_EU$Fire_Int_Groups = metadata_tree_EU$Fire_Int_Groups
+datascores_T_EU$YSF_interval = metadata_tree_EU$YSF_interval
+datascores_T_EU$SWI = metadata_tree_EU$SWI
+
+
 datascores_T$Avg_Temp = metadata_tree$Avg_Temp
 datascores_T$SWI = metadata_tree$SWI
 datascores_T$AvgPer = metadata_tree$AvgPer
@@ -300,48 +326,71 @@ Assumption <- anova(betadisper(dist_tree, metadata_tree$Fire_Int_Groups))
 Assumption2 <- anova(betadisper(dist_tree, metadata_tree$Continent))
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 ###HERB LAYER
 
-Herb_matrix <- Ground_long %>%
+Herbs_EU <- Ground_long %>%
+  filter(Continent == "Eurasia")
+
+Herbs_NA <- Ground_long %>%
+  filter(Continent == "North_America")
+
+Herb_matrix_NA <- Herbs_NA %>%
   pivot_wider(
-    id_cols = c(RowID, StudyID),
+    id_cols = c(RowID, StudyID, Continent),
     names_from = species,      # base = original Dominant_X_Y column
     values_from = cover,
     values_fill = 0
   )
 
 #Create NMDS
-Herb_cols <- setdiff(names(Herb_matrix), c("RowID", "StudyID"))
+Herb_cols_NA <- setdiff(names(Herb_matrix_NA), c("RowID", "StudyID", "Continent"))
 
-Herb_filter <- Herb_matrix[
-  rowSums(Herb_matrix[, Herb_cols] != 0, na.rm = TRUE) > 0,
+Herb_filter_NA <- Herb_matrix_NA[
+  rowSums(Herb_matrix_NA[, Herb_cols_NA] != 0, na.rm = TRUE) > 0,
 ]
 
-metadata_herb <- Herb_filter %>%
+metadata_herb_NA <- Herb_filter_NA %>%
   left_join(metadata_clean, "RowID")
 
-Herb_info <- Herb_filter %>%
-  select(c(StudyID, RowID))
+Herb_info_NA <- Herb_filter_NA %>%
+  select(c(StudyID, RowID, Continent))
 
-Herb_clean <- Herb_filter %>%
-  select(- c(StudyID, RowID))
+Herb_clean_NA <- Herb_filter_NA %>%
+  select(- c(StudyID, RowID, Continent))
 
-NMDS_herb <- metaMDS(Herb_clean, distance = "bray", k = 2, trymax = 1000)
+NMDS_herb_NA <- metaMDS(Herb_clean_NA, distance = "bray", k = 2, trymax = 1000)
 
-NMDS_herb <- metaMDS(Herb_clean, distance = "bray", k = 2, trymax = 1000,
-                     previous.best = NMDS_herb)
+NMDS_herb_NA <- metaMDS(Herb_clean_NA, distance = "bray", k = 2, trymax = 1000,
+                     previous.best = NMDS_herb_EU)
 
 #extract the site scores
-datascores_H = as.data.frame(scores(NMDS_herb)$sites)  
+datascores_H = as.data.frame(scores(NMDS_herb_NA)$sites)  
 
 #add metadata
-datascores_H$Fire_Int_Groups = metadata_herb$Fire_Int_Groups
-datascores_H$YSF_interval = metadata_herb$YSF_interval
-datascores_H$SWI = metadata_herb$SWI
-datascores_H$Avg_Temp = metadata_herb$Avg_Temp
-datascores_H$SWI = metadata_herb$SWI
-datascores_H$AvgPer = metadata_herb$AvgPer
-datascores_H$Continent = metadata_herb$Continent
+datascores_H$Fire_Int_Groups = metadata_herb_NA$Fire_Int_Groups
+datascores_H$YSF_interval = metadata_herb_NA$YSF_interval
+datascores_H$SWI = metadata_herb_NA$SWI
+datascores_H$Avg_Temp = metadata_herb_NA$Avg_Temp
+datascores_H$SWI = metadata_herb_NA$SWI
+datascores_H$AvgPer = metadata_herb_NA$AvgPer
+
 
 datascores_H$Fire_Int_Groups <- factor(
   datascores_H$Fire_Int_Groups,
@@ -349,7 +398,6 @@ datascores_H$Fire_Int_Groups <- factor(
 )
 
 ysf_paths <- datascores_H %>%
-  filter(Continent == "Eurasia") %>%
   group_by(Fire_Int_Groups, YSF_interval) %>%
   summarise(
     NMDS1 = mean(NMDS1, na.rm = TRUE),
@@ -360,13 +408,16 @@ ysf_paths <- datascores_H %>%
 
 
 #plot by continent, YSF, and Fire intensity
-Herb_plot <- ggplot(subset(datascores_H, Continent == "Eurasia"), aes(x = NMDS1, y = NMDS2, 
+Herb_plot_NA <- ggplot(subset(datascores_H), aes(x = NMDS1, y = NMDS2, 
                                       color = Fire_Int_Groups)) +
   geom_point(size = 2, aes(color = Fire_Int_Groups)) +
   coord_fixed() + 
   theme_bw() +
-  ggtitle("Eurasia herbs") +
-  theme(legend.position="none",
+  ggtitle("North America herbs") +
+  theme(legend.position="right",
+        legend.text=element_text(size=20),
+        legend.title=element_text(size=22),
+        legend.direction='vertical',
         plot.title = element_text(size = 20, hjust = 0.5),
         axis.title.x = element_text(size = 20),
         axis.title.y = element_text(size = 20),
@@ -375,6 +426,10 @@ Herb_plot <- ggplot(subset(datascores_H, Continent == "Eurasia"), aes(x = NMDS1,
         panel.grid.major = element_blank()) + 
   scale_color_manual(values = c("firebrick", "goldenrod", "cornflowerblue")) + 
   labs(color = "Fire intensity") +
+  annotate("text", x = max(datascores_H$NMDS1), 
+           y = min(datascores_H$NMDS2), 
+           label = paste("Stress =", round(NMDS_herb_NA$stress, 3)), 
+           hjust = 1.1, vjust = 0.1, size = 5) +
   geom_path(
     data = ysf_paths,
     aes(x = NMDS1, y = NMDS2, group = Fire_Int_Groups, color = Fire_Int_Groups),
@@ -384,7 +439,7 @@ Herb_plot <- ggplot(subset(datascores_H, Continent == "Eurasia"), aes(x = NMDS1,
     show.legend = FALSE
   )
 
-Herb_plot
+Herb_plot_NA
 
 ysf_path_NA <- datascores_H %>%
   filter(Continent == "North_America") %>%
@@ -431,34 +486,78 @@ Herb_plot_NA <- ggplot(subset(datascores_H, Continent == "North_America"), aes(x
 
 Herb_plot_NA
 
+#Arrows for continuous variables
+env_vars <- metadata_moss %>%
+  select(Avg_Temp, AvgPer, Latitude)
 
+envfit_res <- envfit(NMDS_moss ~ ., data = env_vars, permutations = 999)
+
+# To add arrows to ggplot, first extract coordinates
+arrows_moss <- as.data.frame(scores(envfit_res, display = "vectors"))
+arrows_moss$Variable <- rownames(arrows_moss)
+
+ggplot(subset(datascores_M, continent == "Eurasia", aes(NMDS1, NMDS2))) +
+  geom_point(aes(color = Fire_Int_Groups)) +
+  geom_segment(
+    data = arrows_moss,
+    aes(x = 0, y = 0, xend = NMDS1, yend = NMDS2),
+    arrow = arrow(type = "closed", length = unit(0.25, "cm")),
+    color = "black",
+    inherit.aes = FALSE
+  ) +
+  geom_text(
+    data = arrows_moss,
+    aes(x = NMDS1 * 1.1, y = NMDS2 * 1.1, label = Variable),
+    inherit.aes = FALSE
+  )
 
 ##Permanova with StudyID as a random factor
-permutations <- with(metadata_herb, how(nperm=999, blocks = StudyID.x))
+permutations <- with(metadata_herb_NA, how(nperm=999, blocks = StudyID.x))
 
 #Calculate distance matrix
-dist_herb <- vegdist(Herb_clean, method = "bray")
+dist_herb <- vegdist(Herb_clean_NA, method = "bray")
 
 ###Fit permanova model
-Permanova_herb <- adonis2(dist_herb ~ Continent*Years_since_fire*Fire_Int_Groups +
+Permanova_herb_NA <- adonis2(dist_herb ~ 
                             Avg_Temp*Fire_Int_Groups +
-                            AvgPer*Fire_Int_Groups +
                             Latitude*Fire_Int_Groups +
                             Avg_Temp*Years_since_fire +
-                            AvgPer* Years_since_fire +
-                            Latitude * Years_since_fire +
-                            Avg_Temp * Continent +
-                            AvgPer * Continent +
-                            Latitude * Continent,
-                          data=metadata_herb,
+                            AvgPer*Fire_Int_Groups,
+                          data=metadata_herb_NA,
                           permutations=permutations, method="bray")
 
-Permanova_herb #IF THREE WAY INTERACTION IS SIGNIFICANT, IS THERE
-# A POINT IN USING THEM IN OTHER INTERACTION TERMS?
+Permanova_herb_NA
+
+Permanova_herb_NA_out <- as.data.frame(Permanova_herb_NA)
+Permanova_herb_NA_out$Term <- rownames(Permanova_herb_NA_out)
+rownames(Permanova_herb_NA_out) <- NULL
+
+write_xlsx(
+  Permanova_herb_NA_out,
+  path = "PERMANOVA_results_herb_NA.xlsx"
+)
 
 #Homogeneity OK
-Assumption <- anova(betadisper(dist_herb, metadata_herb$Fire_Int_Groups))
-Assumption2 <- anova(betadisper(dist_herb, metadata_herb$Continent))
+Assumption <- anova(betadisper(dist_herb, metadata_herb_NA$Fire_Int_Groups))
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 ########################
 #MOSSES
@@ -534,15 +633,7 @@ datascores_M$Fire_Int_Groups <- factor(
   levels = c("High", "Medium", "Low")
 )
 
-#Arrows for continuous variables
-env_vars <- metadata_moss %>%
-  select(Avg_Temp, AvgPer, Latitude)
 
-envfit_res <- envfit(NMDS_moss ~ ., data = env_vars, permutations = 999)
-
-# To add arrows to ggplot, first extract coordinates
-arrows_moss <- as.data.frame(scores(envfit_res, display = "vectors"))
-arrows_moss$Variable <- rownames(arrows_moss)
 
 ysf_paths <- datascores_M %>%
   filter(Continent == "Eurasia") %>%
@@ -627,7 +718,17 @@ moss_plot_NA <- ggplot(subset(datascores_M, Continent == "North_America"), aes(x
 
 moss_plot_NA
 
-ggplot(datascores_M, aes(NMDS1, NMDS2)) +
+#Arrows for continuous variables
+env_vars <- metadata_moss %>%
+  select(Avg_Temp, AvgPer, Latitude)
+
+envfit_res <- envfit(NMDS_moss ~ ., data = env_vars, permutations = 999)
+
+# To add arrows to ggplot, first extract coordinates
+arrows_moss <- as.data.frame(scores(envfit_res, display = "vectors"))
+arrows_moss$Variable <- rownames(arrows_moss)
+
+ggplot(subset(datascores_M, continent == "Eurasia", aes(NMDS1, NMDS2))) +
   geom_point(aes(color = Fire_Int_Groups)) +
   geom_segment(
     data = arrows_moss,
@@ -657,4 +758,10 @@ ggsave(plot = TreePlots, filename = "TreeNMDS.png", dpi = 300,
 ggsave(plot = HerbPlots, filename = "HerbsNMDS.png", dpi = 300,
        height = 5.26, width = 13)
 ggsave(plot = MossPlots, filename = "MossesNMDS.png", dpi = 300,
+       height = 5.26, width = 13)
+
+
+ggsave(plot = Herb_plot, filename = "EUHerb_NMDS.png", dpi = 300,
+       height = 5.26, width = 13)
+ggsave(plot = Herb_plot_NA, filename = "NAHerb_NMDS.png", dpi = 300,
        height = 5.26, width = 13)
