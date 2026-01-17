@@ -54,7 +54,7 @@ species_long <- species_long %>%
 species_long <- subset(species_long, !species == 0)
 
 
-#Model what affects community 
+#Add metadata
 species_long_meta <- species_long %>%
   left_join(metadata, by = "RowID")
 
@@ -168,12 +168,30 @@ ggplot(df_long, aes(x=Years_since_fire, y = log(Seed_dry_mass))) +
 
 ##################
 #Community cover tests using a beta-regression
-#First we need to filter out herbs
-#Then we need to make a plot*sample column for weights
+#1. Should we change the ysf category?
+#2. Are any effects non-linear?
 
 library(glmmTMB)
 
-#Create a plantgroup column
+#New variable for YSF with more data per step
+df_long <- df_long %>%
+  mutate(
+    YSF_interval = case_when(
+      Years_since_fire <= 1 ~ "1",
+      Years_since_fire <= 2 ~ "2",
+      Years_since_fire <= 3 ~ "3",
+      Years_since_fire <= 4 ~ "4",
+      Years_since_fire <= 5 ~ "5",
+      Years_since_fire <= 7 ~ "6",
+      Years_since_fire <= 9 ~ "7",
+      Years_since_fire <= 22 ~ "8"
+    )
+  )
+
+df_long$YSF_interval <- as.factor(df_long$YSF_interval)
+  
+
+#Create a plantgroup column 
 df_long <- df_long %>%
   mutate(
     PlantGroup = str_extract(base, "(?<=_)[^_]+(?=_)")
@@ -184,20 +202,42 @@ df_long <- df_long %>%
     studysize = Plot_size * Sample_size
   )
 
-herbs <- df_long %>%
-  filter(PlantGroup == "herb")
-
 #Divide by 100 to get a 0-1 range but
 #avoid 0 and 1 one in the dataset (beta must be >0 and <1)
 
-herbs$coverstd <- herbs$cover / 101
+df_long$coverstd <- (df_long$cover + 0.01) / 101
+
+#Scale and center Latitude, percipitation, and temperature
+df_long$Temp_sc <- scale(df_long$Avg_Temp, center = TRUE, scale = TRUE)
+df_long$Per_sc <- scale(df_long$AvgPer, center = TRUE, scale = TRUE)
+df_long$Latitude_sc <- scale(df_long$Latitude, center = TRUE, scale = TRUE)
+
+
+
+#Variables to add as non-linear (atleast try)
+#Temperature (herbs, dwarfshrub, graminoid, shrub, tree)
+#Percipitation (herbs, dwarfshrub, graminoid, shrub)
+#YSF_interval (herbs, trees)
+#Latitude (trees)
+#Continent (no shrubs in Eurasia basically, so don't divide by continent)
+
+#Current issues:
+#Model convergence failure when we add non-linear terms
+#High uncertainties at later years for NA.
+#Should we cut the data at e.g., 15 years?
+
+
+herbs <- df_long %>%
+  filter(PlantGroup == "herb")
+
+
 
 herbmod <- glmmTMB(
   coverstd ~
     Years_since_fire*Continent +
     Fire_Int_Groups * Continent +
     Fire_Int_Groups * Years_since_fire +
-    Avg_Temp +
+    Avg_Temp
     AvgPer +
     Latitude +
     (1 | RowID/StudyID.x) +
@@ -207,7 +247,10 @@ herbmod <- glmmTMB(
   data = herbs
 )
 
+
+summary(herbmod)
 Anova(herbmod, type = 'III')
+
 
 #Plot predictions!
 pred_grid <- expand.grid(
@@ -228,7 +271,7 @@ pred_grid <- expand.grid(
 
 #type = response ok?
 pred <- predict(
-  herbmod,
+  herbmodlin,
   newdata = pred_grid,
   type = "response",
   se.fit = TRUE,
@@ -285,11 +328,6 @@ ggsave(plot = predherbplot, filename = "Pred_herb_plot.png", dpi =300,
 
 dwarfs <- df_long %>%
   filter(PlantGroup == "dwarfshrub")
-
-#Divide by 100 to get a 0-1 range but
-#avoid 0 and 1 one in the dataset (beta must be >0 and <1)
-
-dwarfs$coverstd <- dwarfs$cover / 101
 
 dwarfmod <- glmmTMB(
   coverstd ~
@@ -376,4 +414,98 @@ preddwarfplot<- ggplot(pred_grid,
         panel.grid.major = element_blank()) 
 
 ggsave(plot = preddwarfplot, filename = "Pred_dwarf_plot.png", dpi =300,
+       height = 4.2, width = 6.5)
+
+
+####
+#Graminoids
+
+graminoid <- df_long %>%
+  filter(PlantGroup == "graminoid")
+
+grammod <- glmmTMB(
+  coverstd ~
+    Years_since_fire*Continent +
+    Fire_Int_Groups * Continent +
+    Fire_Int_Groups * Years_since_fire +
+    Avg_Temp +
+    AvgPer +
+    Latitude +
+    (1 | RowID/StudyID.x) +
+    (1 | species),
+  family = beta_family(),
+  weights = studysize,
+  data = graminoid
+)
+
+Anova(grammod, type = 'III')
+
+#Plot predictions!
+pred_grid <- expand.grid(
+  Years_since_fire = seq(
+    min(graminoid$Years_since_fire, na.rm = TRUE),
+    max(graminoid$Years_since_fire, na.rm = TRUE),
+    length.out = 88
+  ),
+  Fire_Int_Groups = levels(graminoid$Fire_Int_Groups),
+  Continent     = levels(graminoid$Continent)
+) %>%
+  mutate(
+    Avg_Temp   = mean(graminoid$Avg_Temp, na.rm = TRUE),
+    AvgPer = mean(graminoid$AvgPer, na.rm = TRUE),
+    Latitude      = mean(graminoid$Latitude, na.rm = TRUE),
+    studysize     = mean(graminoid$studysize, na.rm = TRUE)
+  )
+
+#type = response ok?
+pred <- predict(
+  grammod,
+  newdata = pred_grid,
+  type = "response",
+  se.fit = TRUE,
+  re.form = NA,
+  allow.new.levels = TRUE
+)
+
+pred_grid <- pred_grid %>%
+  mutate(
+    fit   = pred$fit,
+    se    = pred$se.fit,
+    lower = pmax(0, fit - 1.96 * se),
+    upper = pmin(1, fit + 1.96 * se)
+  )
+
+pred_grid$Fire_Int_Groups <- factor(
+  pred_grid$Fire_Int_Groups,
+  levels = c("High", "Medium", "Low")
+)
+
+predgramplot<- ggplot(pred_grid,
+                       aes(x = Years_since_fire,
+                           y = fit,
+                           color = Fire_Int_Groups)) +
+  geom_line(linewidth = 1.2) +
+  facet_wrap(~ Continent) +
+  geom_ribbon(aes(ymin = lower, ymax = upper, fill = Fire_Int_Groups),
+              alpha = 0.2, color = NA, show.legend = FALSE) +
+  scale_color_manual(values = c("firebrick", "goldenrod", "cornflowerblue")) + 
+  scale_fill_manual(values = c("firebrick", "goldenrod", "cornflowerblue")) + 
+  labs(
+    x = "Time since fire (years)",
+    y = "Predicted graminoid cover",
+    color = "Fire intensity"
+  ) +
+  theme_bw() +
+  theme(legend.position="right",
+        legend.text=element_text(size=16),
+        legend.title=element_text(size=16),
+        legend.direction='vertical',
+        axis.title.x = element_text(size = 16),
+        axis.title.y = element_text(size = 16),
+        axis.text = element_text(size = 12),
+        strip.text = element_text(size=12),
+        panel.grid.minor = element_blank(), 
+        panel.grid.major = element_blank()) 
+
+ggsave(plot = predgramplot, filename = "Pred_gram_plot.png", dpi =300,
        height = 4.2, width = 6.5)
