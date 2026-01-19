@@ -5,10 +5,11 @@ library(lme4)
 library(car)
 library(ggeffects)
 library(performance)
-
+library(DHARMa)
+library(glmmTMB)
 
 #Step 2. Load raw data and divide into metadata and species matrix
-df <- read.csv ("Raw_Data.csv", sep = ";")
+df <- read.csv ("Clean_Data.csv", sep = ";")
 
 metadata <- df %>%
   select(-contains("postfire"))
@@ -166,12 +167,15 @@ ggplot(df_long, aes(x=Years_since_fire, y = log(Seed_dry_mass))) +
   stat_smooth(method='lm', aes(color = Fire_Int_Groups))+
   facet_wrap(~Continent)
 
+
+
+
+
+
 ##################
 #Community cover tests using a beta-regression
-#1. Should we change the ysf category?
+#1. Find a new way to describe three species
 #2. Are any effects non-linear?
-
-library(glmmTMB)
 
 #New variable for YSF with more data per step
 df_long <- df_long %>%
@@ -230,62 +234,100 @@ df_long$Latitude_sc <- scale(df_long$Latitude, center = TRUE, scale = TRUE)
 herbs <- df_long %>%
   filter(PlantGroup == "herb")
 
+herbs <- herbs %>%
+  group_by(RowID) %>%
+  mutate(sumcov = sum(cover))
+
+herbs$base <- as.factor(herbs$base)
+
+herbs_dom <- herbs %>%
+  filter(base == "Dominant_herb_1")
+
+herbs_small <- herbs %>%
+  select(-c("base", "species", "PlantGroup", "cover", "Dispersal_unit_dry_mass",
+            "Seed_longevity", "Plant_height_vegetative",
+            "Plant_height_generative", "Seed_dry_mass", "Leaf_nitrogen",
+            "Leaf_area_PI", "Leaf_area_PE")) %>%
+  distinct()
+
+herbs_small$Temp_sc <- scale(herbs_small$Avg_Temp, center = TRUE, scale = TRUE)
+herbs_small$Per_sc <- scale(herbs_small$AvgPer, center = TRUE, scale = TRUE)
+herbs_small$Latitude_sc <- scale(herbs_small$Latitude, center = TRUE, scale = TRUE)
 
 
-herbmod <- glmmTMB(
-  coverstd ~
-    Years_since_fire*Continent +
+ggplot(data = herbs_small, aes(x = log(sumcov))) +
+  geom_histogram()
+
+herbs_small_1 <- herbs_small %>%
+  filter(Years_since_fire >= 1 & Years_since_fire <= 10)
+
+ggplot(data = herbs_dom, aes(x = cover)) +
+  geom_histogram()
+
+herbmod <- lmer(
+  log(cover) ~
+    Years_since_fire * Continent +
     Fire_Int_Groups * Continent +
     Fire_Int_Groups * Years_since_fire +
-    Avg_Temp
+    Avg_Temp +
     AvgPer +
     Latitude +
-    (1 | RowID/StudyID.x) +
-    (1 | species),
-  family = beta_family(),
+    (1 | StudyID.x), #+
+#    log(studysize),
+#  family = beta_family(),
   weights = studysize,
-  data = herbs
+  data = herbs_dom
 )
 
+
+sim_res <- simulateResiduals(fittedModel = herbmod, n = 500)
+plot(sim_res)
+testDispersion(sim_res)
+testQuantiles(sim_res)
 
 summary(herbmod)
 Anova(herbmod, type = 'III')
 
 
+
 #Plot predictions!
 pred_grid <- expand.grid(
   Years_since_fire = seq(
-    min(herbs$Years_since_fire, na.rm = TRUE),
-    max(herbs$Years_since_fire, na.rm = TRUE),
+    min(herbs_small_1$Years_since_fire, na.rm = TRUE),
+    max(herbs_small_1$Years_since_fire, na.rm = TRUE),
     length.out = 88
   ),
-  Fire_Int_Groups = levels(herbs$Fire_Int_Groups),
-  Continent     = levels(herbs$Continent)
+  Fire_Int_Groups = levels(herbs_small_1$Fire_Int_Groups),
+  Continent     = levels(herbs_small_1$Continent)
 ) %>%
   mutate(
-    Avg_Temp   = mean(herbs$Avg_Temp, na.rm = TRUE),
-    AvgPer = mean(herbs$AvgPer, na.rm = TRUE),
-    Latitude      = mean(herbs$Latitude, na.rm = TRUE),
-    studysize     = mean(herbs$studysize, na.rm = TRUE)
+    Avg_Temp   = mean(herbs_small_1$Avg_Temp, na.rm = TRUE),
+    AvgPer = mean(herbs_small_1$AvgPer, na.rm = TRUE),
+    Latitude      = mean(herbs_small_1$Latitude, na.rm = TRUE),
+    studysize     = mean(herbs_small_1$studysize, na.rm = TRUE)
   )
 
 #type = response ok?
 pred <- predict(
-  herbmodlin,
+  herbmod,
   newdata = pred_grid,
-  type = "response",
   se.fit = TRUE,
   re.form = NA,
   allow.new.levels = TRUE
 )
 
-pred_grid <- pred_grid %>%
-  mutate(
-    fit   = pred$fit,
-    se    = pred$se.fit,
-    lower = pmax(0, fit - 1.96 * se),
-    upper = pmin(1, fit + 1.96 * se)
-  )
+# linear predictor = log(sumcov)
+pred_log <- pred$fit
+se_log <- pred$se.fit
+
+# 95% CI on log scale
+lower_log <- pred_log - 1.96 * se_log
+upper_log <- pred_log + 1.96 * se_log
+
+# back-transform to original scale
+pred_grid$fit <- exp(pred_log)
+pred_grid$lower <- exp(lower_log)
+pred_grid$upper <- exp(upper_log)
 
 pred_grid$Fire_Int_Groups <- factor(
   pred_grid$Fire_Int_Groups,
@@ -318,6 +360,9 @@ predherbplot<- ggplot(pred_grid,
         strip.text = element_text(size=12),
         panel.grid.minor = element_blank(), 
         panel.grid.major = element_blank()) 
+
+
+predherbplot
 
 ggsave(plot = predherbplot, filename = "Pred_herb_plot.png", dpi =300,
        height = 4.2, width = 6.5)
