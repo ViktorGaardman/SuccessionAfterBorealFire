@@ -7,6 +7,7 @@ library(ggeffects)
 library(performance)
 library(DHARMa)
 library(glmmTMB)
+library(patchwork)
 
 #Step 2. Load raw data and divide into metadata and species matrix
 df <- read.csv ("Clean_Data.csv", sep = ";")
@@ -201,7 +202,7 @@ df_long$Temp_sc <- scale(df_long$Avg_Temp, center = TRUE, scale = TRUE)
 df_long$Per_sc <- scale(df_long$AvgPer, center = TRUE, scale = TRUE)
 df_long$Latitude_sc <- scale(df_long$Latitude, center = TRUE, scale = TRUE)
 
-
+df_long$base <- as.factor(df_long$base)
 
 #Variables to add as non-linear (atleast try)
 #Temperature (herbs, dwarfshrub, graminoid, shrub, tree)
@@ -215,13 +216,7 @@ df_long$Latitude_sc <- scale(df_long$Latitude, center = TRUE, scale = TRUE)
 #High uncertainties at later years for NA.
 #Should we cut the data at e.g., 15 years?
 
-
-herbs <- df_long %>%
-  filter(PlantGroup == "herb")
-
-herbs$base <- as.factor(herbs$base)
-
-herbs_dom <- herbs %>%
+herbs_dom <- df_long %>%
   filter(base == "Dominant_herb_1")
 
 #Normalize studysize for better model fit
@@ -315,20 +310,22 @@ predherbplot<- ggplot(pred_grid,
   scale_fill_manual(values = c("firebrick", "goldenrod", "cornflowerblue")) + 
   labs(
     x = "Time since fire (years)",
-    y = "Predicted herb cover",
+    y = "Predicted cover",
     color = "Fire intensity"
   ) +
   theme_bw() +
-  theme(legend.position="right",
+  ggtitle("Herbs")+
+  theme(legend.position="none",
         legend.text=element_text(size=16),
-        legend.title=element_text(size=16),
+        legend.title=element_text(size=18),
         legend.direction='vertical',
-        axis.title.x = element_text(size = 16),
-        axis.title.y = element_text(size = 16),
-        axis.text = element_text(size = 12),
-        strip.text = element_text(size=12),
+        axis.title.x = element_blank(),
+        axis.title.y = element_text(size=18),
+        axis.text = element_text(size = 14),
+        strip.text = element_text(size=16),
         panel.grid.minor = element_blank(), 
-        panel.grid.major = element_blank()) 
+        panel.grid.major = element_blank(),
+        plot.title = element_text(size = 18, hjust = 0.5)) 
 
 
 predherbplot
@@ -340,12 +337,7 @@ ggsave(plot = predherbplot, filename = "Pred_herb_plot.png", dpi =300,
 ####
 #DWARFSHRUBS
 
-dwarfs <- df_long %>%
-  filter(PlantGroup == "dwarfshrub")
-
-dwarfs$base <- as.factor(dwarfs$base)
-
-dwarfs_dom <- dwarfs %>%
+dwarfs_dom <- df_long %>%
   filter(base == "Dominant_dwarfshrub_1")
 
 dwarfmod <- glmmTMB(
@@ -428,16 +420,18 @@ preddwarfplot<- ggplot(pred_grid,
     color = "Fire intensity"
   ) +
   theme_bw() +
+  ggtitle("Dwarfshrubs")+
   theme(legend.position="right",
         legend.text=element_text(size=16),
-        legend.title=element_text(size=16),
+        legend.title=element_text(size=18),
         legend.direction='vertical',
-        axis.title.x = element_text(size = 16),
-        axis.title.y = element_text(size = 16),
-        axis.text = element_text(size = 12),
-        strip.text = element_text(size=12),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+        axis.text = element_text(size = 14),
+        strip.text = element_text(size=16),
         panel.grid.minor = element_blank(), 
-        panel.grid.major = element_blank()) 
+        panel.grid.major = element_blank(),
+        plot.title = element_text(size = 18, hjust = 0.5)) 
 
 preddwarfplot
 
@@ -448,12 +442,7 @@ ggsave(plot = preddwarfplot, filename = "Pred_dwarf_plot.png", dpi =300,
 ####
 #Graminoids
 
-graminoid <- df_long %>%
-  filter(PlantGroup == "graminoid")
-
-graminoid$base <- as.factor(graminoid$base)
-
-gram_dom <- graminoid %>%
+gram_dom <- df_long %>%
   filter(base == "Dominant_graminoid_1")
 
 grammod <- glmmTMB(
@@ -536,16 +525,18 @@ predgramplot<- ggplot(pred_grid,
     color = "Fire intensity"
   ) +
   theme_bw() +
-  theme(legend.position="right",
+  ggtitle("Graminoids")+
+  theme(legend.position="none",
         legend.text=element_text(size=16),
-        legend.title=element_text(size=16),
+        legend.title=element_text(size=18),
         legend.direction='vertical',
-        axis.title.x = element_text(size = 16),
-        axis.title.y = element_text(size = 16),
-        axis.text = element_text(size = 12),
-        strip.text = element_text(size=12),
+        axis.title.x = element_text(size = 18),
+        axis.title.y = element_blank(),
+        axis.text = element_text(size = 14),
+        strip.text = element_text(size=16),
         panel.grid.minor = element_blank(), 
-        panel.grid.major = element_blank()) 
+        panel.grid.major = element_blank(),
+        plot.title = element_text(size = 18, hjust = 0.5)) 
 
 predgramplot
 
@@ -555,12 +546,7 @@ ggsave(plot = predgramplot, filename = "Pred_gram_plot.png", dpi =300,
 ####
 #Trees
 
-trees <- df_long %>%
-  filter(PlantGroup == "tree")
-
-trees$base <- as.factor(trees$base)
-
-tree_dom <- trees %>%
+tree_dom <- df_long %>%
   filter(base == "Dominant_tree_1")
 
 tree_dom <- tree_dom %>%
@@ -646,18 +632,234 @@ predtreeplot<- ggplot(pred_grid,
     color = "Fire intensity"
   ) +
   theme_bw() +
-  theme(legend.position="right",
+  ggtitle("Trees")+
+  theme(legend.position="none",
         legend.text=element_text(size=16),
-        legend.title=element_text(size=16),
+        legend.title=element_text(size=18),
         legend.direction='vertical',
-        axis.title.x = element_text(size = 16),
-        axis.title.y = element_text(size = 16),
-        axis.text = element_text(size = 12),
-        strip.text = element_text(size=12),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+        axis.text = element_text(size = 14),
+        strip.text = element_text(size=16),
         panel.grid.minor = element_blank(), 
-        panel.grid.major = element_blank()) 
+        panel.grid.major = element_blank(),
+        plot.title = element_text(size = 18, hjust = 0.5)) 
 
 predtreeplot
 
 ggsave(plot = predtreeplot, filename = "Pred_tree_plot.png", dpi =300,
        height = 4.2, width = 6.5)
+
+
+#####
+#Shrubs
+
+shrubs_dom <- df_long %>%
+  filter(base == "Dominant_shrub_1")
+
+shrubs_dom <- shrubs_dom %>%
+  filter(!is.na(coverstd))
+
+#Only data from one study in Europe. Use only NA for shrub model
+shrubs_dom <- shrubs_dom %>%
+  filter(! Continent %in% "Eurasia")
+
+shrubmod <- glmmTMB(
+  coverstd ~
+    Fire_Int_Groups * Years_since_fire,
+  family = beta_family(),
+ # dispformula = ~ Fire_Int_Groups,
+  data = shrubs_dom
+)
+
+sim_res <- simulateResiduals(fittedModel = shrubmod, n = 500)
+plot(sim_res)
+testDispersion(sim_res)
+testQuantiles(sim_res)
+plotResiduals(sim_res, shrubs_dom$Years_since_fire)
+plotResiduals(sim_res, shrubs_dom$Fire_Int_Groups)
+
+
+summary(shrubmod)
+Anova(shrubmod, type = 'III')
+
+#Plot predictions!
+pred_grid <- expand.grid(
+  Years_since_fire = seq(
+    min(shrubs_dom$Years_since_fire, na.rm = TRUE),
+    max(shrubs_dom$Years_since_fire, na.rm = TRUE),
+    length.out = 88
+  ),
+  Fire_Int_Groups = levels(shrubs_dom$Fire_Int_Groups)
+) 
+
+#type = response ok?
+pred <- predict(
+  shrubmod,
+  newdata = pred_grid,
+  type = "link",
+  se.fit = TRUE,
+  re.form = NA,
+  allow.new.levels = TRUE
+)
+
+eta <- pred$fit
+se  <- pred$se.fit
+
+lower_eta <- eta - 1.96 * se
+upper_eta <- eta + 1.96 * se
+
+# inverse link = plogis for beta regression
+pred_grid$fit   <- plogis(eta)
+pred_grid$lower <- plogis(lower_eta)
+pred_grid$upper <- plogis(upper_eta)
+
+pred_grid$Fire_Int_Groups <- factor(
+  pred_grid$Fire_Int_Groups,
+  levels = c("High", "Medium", "Low")
+)
+
+predshrubplot<- ggplot(pred_grid,
+                      aes(x = Years_since_fire,
+                          y = fit,
+                          color = Fire_Int_Groups)) +
+  geom_line(linewidth = 1.2) +
+  geom_ribbon(aes(ymin = lower, ymax = upper, fill = Fire_Int_Groups),
+              alpha = 0.2, color = NA, show.legend = FALSE) +
+  scale_color_manual(values = c("firebrick", "goldenrod", "cornflowerblue")) + 
+  scale_fill_manual(values = c("firebrick", "goldenrod", "cornflowerblue")) + 
+  labs(
+    x = "Time since fire (years)",
+    y = "Predicted shrub cover",
+    color = "Fire intensity"
+  ) +
+  theme_bw() +
+  ggtitle("Shrubs")+
+  theme(legend.position="none",
+        legend.text=element_text(size=16),
+        legend.title=element_text(size=18),
+        legend.direction='vertical',
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+        axis.text = element_text(size = 14),
+        strip.text = element_text(size=16),
+        panel.grid.minor = element_blank(), 
+        panel.grid.major = element_blank(),
+        plot.title = element_text(size = 18, hjust = 0.5)) 
+
+predshrubplot
+
+ggsave(plot = predshrubplot, filename = "Pred_shrub_plot.png", dpi =300,
+       height = 4.2, width = 6.5)
+
+#####
+#Mosses
+bryo_dom <- df_long %>%
+  filter(base == "Dominant_bryophyte_1")
+
+bryo_dom <- bryo_dom %>%
+  filter(!is.na(coverstd))
+
+bryomod <- glmmTMB(
+  coverstd ~
+    Fire_Int_Groups * Years_since_fire +
+    Fire_Int_Groups * Continent +
+    Years_since_fire * Continent,
+  family = beta_family(),
+   dispformula = ~ Continent,
+  data = bryo_dom
+)
+
+sim_res <- simulateResiduals(fittedModel = bryomod, n = 500)
+plot(sim_res)
+testDispersion(sim_res)
+testQuantiles(sim_res)
+plotResiduals(sim_res, bryo_dom$Years_since_fire)
+plotResiduals(sim_res, bryo_dom$Fire_Int_Groups)
+plotResiduals(sim_res, bryo_dom$Continent)
+
+summary(bryomod)
+Anova(bryomod, type = 'III')
+
+#Plot predictions!
+pred_grid <- expand.grid(
+  Years_since_fire = seq(
+    min(bryo_dom$Years_since_fire, na.rm = TRUE),
+    max(bryo_dom$Years_since_fire, na.rm = TRUE),
+    length.out = 88
+  ),
+  Fire_Int_Groups = levels(bryo_dom$Fire_Int_Groups),
+  Continent = levels(bryo_dom$Continent)
+) 
+
+#type = response ok?
+pred <- predict(
+  bryomod,
+  newdata = pred_grid,
+  type = "link",
+  se.fit = TRUE,
+  re.form = NA,
+  allow.new.levels = TRUE
+)
+
+eta <- pred$fit
+se  <- pred$se.fit
+
+lower_eta <- eta - 1.96 * se
+upper_eta <- eta + 1.96 * se
+
+# inverse link = plogis for beta regression
+pred_grid$fit   <- plogis(eta)
+pred_grid$lower <- plogis(lower_eta)
+pred_grid$upper <- plogis(upper_eta)
+
+pred_grid$Fire_Int_Groups <- factor(
+  pred_grid$Fire_Int_Groups,
+  levels = c("High", "Medium", "Low")
+)
+
+predmossplot<- ggplot(pred_grid,
+                       aes(x = Years_since_fire,
+                           y = fit,
+                           color = Fire_Int_Groups)) +
+  geom_line(linewidth = 1.2) +
+  facet_wrap(~ Continent,
+             labeller = labeller(
+               Continent = c(
+                 "Eurasia" = "Eurasia",
+                 "North_America" = "North America"))) +
+  geom_ribbon(aes(ymin = lower, ymax = upper, fill = Fire_Int_Groups),
+              alpha = 0.2, color = NA, show.legend = FALSE) +
+  scale_color_manual(values = c("firebrick", "goldenrod", "cornflowerblue")) + 
+  scale_fill_manual(values = c("firebrick", "goldenrod", "cornflowerblue")) + 
+  labs(
+    x = "Time since fire (years)",
+    y = "Predicted moss cover",
+    color = "Fire intensity"
+  ) +
+  theme_bw() +
+  ggtitle("Bryophytes")+
+  theme(legend.position="none",
+        legend.text=element_text(size=16),
+        legend.title=element_text(size=18),
+        legend.direction='vertical',
+        axis.title.x = element_text(size=18),
+        axis.title.y = element_blank(),
+        axis.text = element_text(size = 14),
+        strip.text = element_text(size=16),
+        panel.grid.minor = element_blank(), 
+        panel.grid.major = element_blank(),
+        plot.title = element_text(size = 18, hjust = 0.5)) 
+
+predmossplot
+
+ggsave(plot = predmossplot, filename = "Pred_moss_plot.png", dpi =300,
+       height = 4.2, width = 6.5)
+
+#Combinedplot
+
+combinedplot <- (predtreeplot|predshrubplot)/(predherbplot|preddwarfplot)/(predgramplot|predmossplot)
+combinedplot
+
+ggsave(plot=combinedplot, filename = "coverplots_combined.png", dpi =300,
+       height = 10.52, width = 13)
