@@ -111,6 +111,7 @@ df_long <- df_long %>%
 #by mean temp, perc, or soil water content?
 #Look at how traits are affected by successional pathways
 #(no dominance, just baisc traits)
+#Remember to add average genera-level trait values for species_sp.
 
 # Names of species in each dataset
 species_try <- unique(TRY_Traits$species)
@@ -177,35 +178,19 @@ ggplot(df_long, aes(x=Years_since_fire, y = log(Seed_dry_mass))) +
 #1. Find a new way to describe three species
 #2. Are any effects non-linear?
 
-#New variable for YSF with more data per step
-df_long <- df_long %>%
-  mutate(
-    YSF_interval = case_when(
-      Years_since_fire <= 1 ~ "1",
-      Years_since_fire <= 2 ~ "2",
-      Years_since_fire <= 3 ~ "3",
-      Years_since_fire <= 4 ~ "4",
-      Years_since_fire <= 5 ~ "5",
-      Years_since_fire <= 7 ~ "6",
-      Years_since_fire <= 9 ~ "7",
-      Years_since_fire <= 22 ~ "8"
-    )
-  )
-
-df_long$YSF_interval <- as.factor(df_long$YSF_interval)
-  
-
 #Create a plantgroup column 
 df_long <- df_long %>%
   mutate(
     PlantGroup = str_extract(base, "(?<=_)[^_]+(?=_)")
   )
 
+#Create a total size of study column
 df_long <- df_long %>%
   mutate(
     studysize = Plot_size * Sample_size
   )
 
+#
 #Divide by 100 to get a 0-1 range but
 #avoid 0 and 1 one in the dataset (beta must be >0 and <1)
 
@@ -234,100 +219,80 @@ df_long$Latitude_sc <- scale(df_long$Latitude, center = TRUE, scale = TRUE)
 herbs <- df_long %>%
   filter(PlantGroup == "herb")
 
-herbs <- herbs %>%
-  group_by(RowID) %>%
-  mutate(sumcov = sum(cover))
-
 herbs$base <- as.factor(herbs$base)
 
 herbs_dom <- herbs %>%
   filter(base == "Dominant_herb_1")
 
-herbs_small <- herbs %>%
-  select(-c("base", "species", "PlantGroup", "cover", "Dispersal_unit_dry_mass",
-            "Seed_longevity", "Plant_height_vegetative",
-            "Plant_height_generative", "Seed_dry_mass", "Leaf_nitrogen",
-            "Leaf_area_PI", "Leaf_area_PE")) %>%
-  distinct()
-
-herbs_small$Temp_sc <- scale(herbs_small$Avg_Temp, center = TRUE, scale = TRUE)
-herbs_small$Per_sc <- scale(herbs_small$AvgPer, center = TRUE, scale = TRUE)
-herbs_small$Latitude_sc <- scale(herbs_small$Latitude, center = TRUE, scale = TRUE)
+#Normalize studysize for better model fit
+herbs_dom$studysize_norm <- sqrt(herbs_dom$studysize) / mean(sqrt(herbs_dom$studysize), na.rm = TRUE)
 
 
-ggplot(data = herbs_small, aes(x = log(sumcov))) +
-  geom_histogram()
-
-herbs_small_1 <- herbs_small %>%
-  filter(Years_since_fire >= 1 & Years_since_fire <= 10)
-
-ggplot(data = herbs_dom, aes(x = cover)) +
-  geom_histogram()
-
-herbmod <- lmer(
-  log(cover) ~
+herbmod <- glmmTMB(
+  coverstd ~
     Years_since_fire * Continent +
     Fire_Int_Groups * Continent +
-    Fire_Int_Groups * Years_since_fire +
-    Avg_Temp +
-    AvgPer +
-    Latitude +
-    (1 | StudyID.x), #+
-#    log(studysize),
-#  family = beta_family(),
-  weights = studysize,
+    Fire_Int_Groups * Years_since_fire,
+  dispformula = ~ Fire_Int_Groups,
+  family = beta_family(),
   data = herbs_dom
 )
+
 
 
 sim_res <- simulateResiduals(fittedModel = herbmod, n = 500)
 plot(sim_res)
 testDispersion(sim_res)
 testQuantiles(sim_res)
+plotResiduals(sim_res, herbs_dom$Years_since_fire)
+plotResiduals(sim_res, herbs_dom$Fire_Int_Groups)
+plotResiduals(res0, herbs_dom$Avg_Temp)
+plotResiduals(res0, herbs_dom$AvgPer)
+plotResiduals(sim_res, herbs_dom$Continent)
+
+
 
 summary(herbmod)
 Anova(herbmod, type = 'III')
 
 
-
 #Plot predictions!
 pred_grid <- expand.grid(
   Years_since_fire = seq(
-    min(herbs_small_1$Years_since_fire, na.rm = TRUE),
-    max(herbs_small_1$Years_since_fire, na.rm = TRUE),
+    min(herbs_dom$Years_since_fire, na.rm = TRUE),
+    max(herbs_dom$Years_since_fire, na.rm = TRUE),
     length.out = 88
   ),
-  Fire_Int_Groups = levels(herbs_small_1$Fire_Int_Groups),
-  Continent     = levels(herbs_small_1$Continent)
-) %>%
-  mutate(
-    Avg_Temp   = mean(herbs_small_1$Avg_Temp, na.rm = TRUE),
-    AvgPer = mean(herbs_small_1$AvgPer, na.rm = TRUE),
-    Latitude      = mean(herbs_small_1$Latitude, na.rm = TRUE),
-    studysize     = mean(herbs_small_1$studysize, na.rm = TRUE)
-  )
+  Fire_Int_Groups = levels(herbs_dom$Fire_Int_Groups),
+  Continent     = levels(herbs_dom$Continent)
+) 
+#%>%
+#  mutate(
+#    Avg_Temp   = mean(herbs_dom$Avg_Temp, na.rm = TRUE),
+#    AvgPer = mean(herbs_dom$AvgPer, na.rm = TRUE),
+#    studysize     = mean(herbs_dom$studysize, na.rm = TRUE)
+#  )
 
-#type = response ok?
+
 pred <- predict(
   herbmod,
   newdata = pred_grid,
+  type = "link",      
   se.fit = TRUE,
-  re.form = NA,
-  allow.new.levels = TRUE
+  re.form = NA
 )
 
-# linear predictor = log(sumcov)
-pred_log <- pred$fit
-se_log <- pred$se.fit
+eta <- pred$fit
+se  <- pred$se.fit
 
-# 95% CI on log scale
-lower_log <- pred_log - 1.96 * se_log
-upper_log <- pred_log + 1.96 * se_log
+lower_eta <- eta - 1.96 * se
+upper_eta <- eta + 1.96 * se
 
-# back-transform to original scale
-pred_grid$fit <- exp(pred_log)
-pred_grid$lower <- exp(lower_log)
-pred_grid$upper <- exp(upper_log)
+# inverse link = plogis for beta regression
+pred_grid$fit   <- plogis(eta)
+pred_grid$lower <- plogis(lower_eta)
+pred_grid$upper <- plogis(upper_eta)
+
 
 pred_grid$Fire_Int_Groups <- factor(
   pred_grid$Fire_Int_Groups,
@@ -339,7 +304,11 @@ predherbplot<- ggplot(pred_grid,
            y = fit,
            color = Fire_Int_Groups)) +
   geom_line(linewidth = 1.2) +
-  facet_wrap(~ Continent) +
+  facet_wrap(~ Continent,
+             labeller = labeller(
+               Continent = c(
+                 "Eurasia" = "Eurasia",
+                 "North_America" = "North America"))) +
   geom_ribbon(aes(ymin = lower, ymax = upper, fill = Fire_Int_Groups),
               alpha = 0.2, color = NA, show.legend = FALSE) +
   scale_color_manual(values = c("firebrick", "goldenrod", "cornflowerblue")) + 
@@ -374,57 +343,65 @@ ggsave(plot = predherbplot, filename = "Pred_herb_plot.png", dpi =300,
 dwarfs <- df_long %>%
   filter(PlantGroup == "dwarfshrub")
 
+dwarfs$base <- as.factor(dwarfs$base)
+
+dwarfs_dom <- dwarfs %>%
+  filter(base == "Dominant_dwarfshrub_1")
+
 dwarfmod <- glmmTMB(
   coverstd ~
     Years_since_fire*Continent +
     Fire_Int_Groups * Continent +
-    Fire_Int_Groups * Years_since_fire +
-    Avg_Temp +
-    AvgPer +
-    Latitude +
-    (1 | RowID/StudyID.x) +
-    (1 | species),
+    Fire_Int_Groups * Years_since_fire,
   family = beta_family(),
-  weights = studysize,
-  data = dwarfs
+  dispformula = ~ Continent,
+  data = dwarfs_dom
 )
 
-Anova(herbmod, type = 'III')
+sim_res <- simulateResiduals(fittedModel = dwarfmod, n = 500)
+plot(sim_res)
+testDispersion(sim_res)
+testQuantiles(sim_res)
+plotResiduals(sim_res, dwarfs_dom$Years_since_fire)
+plotResiduals(sim_res, dwarfs_dom$Fire_Int_Groups)
+plotResiduals(sim_res, dwarfs_dom$Continent)
+
+
+
+summary(dwarfmod)
+Anova(dwarfmod, type = 'III')
 
 #Plot predictions!
 pred_grid <- expand.grid(
   Years_since_fire = seq(
-    min(dwarfs$Years_since_fire, na.rm = TRUE),
-    max(dwarfs$Years_since_fire, na.rm = TRUE),
+    min(dwarfs_dom$Years_since_fire, na.rm = TRUE),
+    max(dwarfs_dom$Years_since_fire, na.rm = TRUE),
     length.out = 88
   ),
-  Fire_Int_Groups = levels(dwarfs$Fire_Int_Groups),
-  Continent     = levels(dwarfs$Continent)
-) %>%
-  mutate(
-    Avg_Temp   = mean(dwarfs$Avg_Temp, na.rm = TRUE),
-    AvgPer = mean(dwarfs$AvgPer, na.rm = TRUE),
-    Latitude      = mean(dwarfs$Latitude, na.rm = TRUE),
-    studysize     = mean(dwarfs$studysize, na.rm = TRUE)
-  )
+  Fire_Int_Groups = levels(dwarfs_dom$Fire_Int_Groups),
+  Continent     = levels(dwarfs_dom$Continent)
+) 
 
 #type = response ok?
 pred <- predict(
   dwarfmod,
   newdata = pred_grid,
-  type = "response",
+  type = "link",
   se.fit = TRUE,
   re.form = NA,
   allow.new.levels = TRUE
 )
 
-pred_grid <- pred_grid %>%
-  mutate(
-    fit   = pred$fit,
-    se    = pred$se.fit,
-    lower = pmax(0, fit - 1.96 * se),
-    upper = pmin(1, fit + 1.96 * se)
-  )
+eta <- pred$fit
+se  <- pred$se.fit
+
+lower_eta <- eta - 1.96 * se
+upper_eta <- eta + 1.96 * se
+
+# inverse link = plogis for beta regression
+pred_grid$fit   <- plogis(eta)
+pred_grid$lower <- plogis(lower_eta)
+pred_grid$upper <- plogis(upper_eta)
 
 pred_grid$Fire_Int_Groups <- factor(
   pred_grid$Fire_Int_Groups,
@@ -436,7 +413,11 @@ preddwarfplot<- ggplot(pred_grid,
                           y = fit,
                           color = Fire_Int_Groups)) +
   geom_line(linewidth = 1.2) +
-  facet_wrap(~ Continent) +
+  facet_wrap(~ Continent,
+             labeller = labeller(
+    Continent = c(
+      "Eurasia" = "Eurasia",
+      "North_America" = "North America"))) +
   geom_ribbon(aes(ymin = lower, ymax = upper, fill = Fire_Int_Groups),
               alpha = 0.2, color = NA, show.legend = FALSE) +
   scale_color_manual(values = c("firebrick", "goldenrod", "cornflowerblue")) + 
@@ -458,6 +439,8 @@ preddwarfplot<- ggplot(pred_grid,
         panel.grid.minor = element_blank(), 
         panel.grid.major = element_blank()) 
 
+preddwarfplot
+
 ggsave(plot = preddwarfplot, filename = "Pred_dwarf_plot.png", dpi =300,
        height = 4.2, width = 6.5)
 
@@ -468,57 +451,65 @@ ggsave(plot = preddwarfplot, filename = "Pred_dwarf_plot.png", dpi =300,
 graminoid <- df_long %>%
   filter(PlantGroup == "graminoid")
 
+graminoid$base <- as.factor(graminoid$base)
+
+gram_dom <- graminoid %>%
+  filter(base == "Dominant_graminoid_1")
+
 grammod <- glmmTMB(
   coverstd ~
     Years_since_fire*Continent +
     Fire_Int_Groups * Continent +
-    Fire_Int_Groups * Years_since_fire +
-    Avg_Temp +
-    AvgPer +
-    Latitude +
-    (1 | RowID/StudyID.x) +
-    (1 | species),
+    Fire_Int_Groups * Years_since_fire,
   family = beta_family(),
-  weights = studysize,
-  data = graminoid
+#  dispformula = ~Years_since_fire,
+  data = gram_dom
 )
 
+sim_res <- simulateResiduals(fittedModel = grammod, n = 500)
+plot(sim_res)
+testDispersion(sim_res)
+testQuantiles(sim_res)
+plotResiduals(sim_res, gram_dom$Years_since_fire)
+plotResiduals(sim_res, gram_dom$Fire_Int_Groups)
+plotResiduals(sim_res, gram_dom$Continent)
+
+
+
+summary(grammod)
 Anova(grammod, type = 'III')
 
 #Plot predictions!
 pred_grid <- expand.grid(
   Years_since_fire = seq(
-    min(graminoid$Years_since_fire, na.rm = TRUE),
-    max(graminoid$Years_since_fire, na.rm = TRUE),
+    min(gram_dom$Years_since_fire, na.rm = TRUE),
+    max(gram_dom$Years_since_fire, na.rm = TRUE),
     length.out = 88
   ),
-  Fire_Int_Groups = levels(graminoid$Fire_Int_Groups),
-  Continent     = levels(graminoid$Continent)
-) %>%
-  mutate(
-    Avg_Temp   = mean(graminoid$Avg_Temp, na.rm = TRUE),
-    AvgPer = mean(graminoid$AvgPer, na.rm = TRUE),
-    Latitude      = mean(graminoid$Latitude, na.rm = TRUE),
-    studysize     = mean(graminoid$studysize, na.rm = TRUE)
-  )
+  Fire_Int_Groups = levels(gram_dom$Fire_Int_Groups),
+  Continent     = levels(gram_dom$Continent)
+) 
 
 #type = response ok?
 pred <- predict(
   grammod,
   newdata = pred_grid,
-  type = "response",
+  type = "link",
   se.fit = TRUE,
   re.form = NA,
   allow.new.levels = TRUE
 )
 
-pred_grid <- pred_grid %>%
-  mutate(
-    fit   = pred$fit,
-    se    = pred$se.fit,
-    lower = pmax(0, fit - 1.96 * se),
-    upper = pmin(1, fit + 1.96 * se)
-  )
+eta <- pred$fit
+se  <- pred$se.fit
+
+lower_eta <- eta - 1.96 * se
+upper_eta <- eta + 1.96 * se
+
+# inverse link = plogis for beta regression
+pred_grid$fit   <- plogis(eta)
+pred_grid$lower <- plogis(lower_eta)
+pred_grid$upper <- plogis(upper_eta)
 
 pred_grid$Fire_Int_Groups <- factor(
   pred_grid$Fire_Int_Groups,
@@ -530,7 +521,11 @@ predgramplot<- ggplot(pred_grid,
                            y = fit,
                            color = Fire_Int_Groups)) +
   geom_line(linewidth = 1.2) +
-  facet_wrap(~ Continent) +
+  facet_wrap(~ Continent,
+             labeller = labeller(
+               Continent = c(
+                 "Eurasia" = "Eurasia",
+                 "North_America" = "North America"))) +
   geom_ribbon(aes(ymin = lower, ymax = upper, fill = Fire_Int_Groups),
               alpha = 0.2, color = NA, show.legend = FALSE) +
   scale_color_manual(values = c("firebrick", "goldenrod", "cornflowerblue")) + 
@@ -552,5 +547,117 @@ predgramplot<- ggplot(pred_grid,
         panel.grid.minor = element_blank(), 
         panel.grid.major = element_blank()) 
 
+predgramplot
+
 ggsave(plot = predgramplot, filename = "Pred_gram_plot.png", dpi =300,
+       height = 4.2, width = 6.5)
+
+####
+#Trees
+
+trees <- df_long %>%
+  filter(PlantGroup == "tree")
+
+trees$base <- as.factor(trees$base)
+
+tree_dom <- trees %>%
+  filter(base == "Dominant_tree_1")
+
+tree_dom <- tree_dom %>%
+  filter(!is.na(coverstd))
+
+treemod <- glmmTMB(
+  coverstd ~
+    Years_since_fire*Continent +
+    Fire_Int_Groups * Continent +
+    Fire_Int_Groups * Years_since_fire,
+  family = beta_family(),
+    dispformula = ~ Fire_Int_Groups,
+  data = tree_dom
+)
+
+sim_res <- simulateResiduals(fittedModel = treemod, n = 500)
+plot(sim_res)
+testDispersion(sim_res)
+testQuantiles(sim_res)
+plotResiduals(sim_res, tree_dom$Years_since_fire)
+plotResiduals(sim_res, tree_dom$Fire_Int_Groups)
+plotResiduals(sim_res, tree_dom$Continent)
+
+
+
+summary(treemod)
+Anova(treemod, type = 'III')
+
+#Plot predictions!
+pred_grid <- expand.grid(
+  Years_since_fire = seq(
+    min(tree_dom$Years_since_fire, na.rm = TRUE),
+    max(tree_dom$Years_since_fire, na.rm = TRUE),
+    length.out = 88
+  ),
+  Fire_Int_Groups = levels(tree_dom$Fire_Int_Groups),
+  Continent     = levels(tree_dom$Continent)
+) 
+
+#type = response ok?
+pred <- predict(
+  treemod,
+  newdata = pred_grid,
+  type = "link",
+  se.fit = TRUE,
+  re.form = NA,
+  allow.new.levels = TRUE
+)
+
+eta <- pred$fit
+se  <- pred$se.fit
+
+lower_eta <- eta - 1.96 * se
+upper_eta <- eta + 1.96 * se
+
+# inverse link = plogis for beta regression
+pred_grid$fit   <- plogis(eta)
+pred_grid$lower <- plogis(lower_eta)
+pred_grid$upper <- plogis(upper_eta)
+
+pred_grid$Fire_Int_Groups <- factor(
+  pred_grid$Fire_Int_Groups,
+  levels = c("High", "Medium", "Low")
+)
+
+predtreeplot<- ggplot(pred_grid,
+                      aes(x = Years_since_fire,
+                          y = fit,
+                          color = Fire_Int_Groups)) +
+  geom_line(linewidth = 1.2) +
+  facet_wrap(~ Continent,
+             labeller = labeller(
+               Continent = c(
+                 "Eurasia" = "Eurasia",
+                 "North_America" = "North America"))) +
+  geom_ribbon(aes(ymin = lower, ymax = upper, fill = Fire_Int_Groups),
+              alpha = 0.2, color = NA, show.legend = FALSE) +
+  scale_color_manual(values = c("firebrick", "goldenrod", "cornflowerblue")) + 
+  scale_fill_manual(values = c("firebrick", "goldenrod", "cornflowerblue")) + 
+  labs(
+    x = "Time since fire (years)",
+    y = "Predicted tree cover",
+    color = "Fire intensity"
+  ) +
+  theme_bw() +
+  theme(legend.position="right",
+        legend.text=element_text(size=16),
+        legend.title=element_text(size=16),
+        legend.direction='vertical',
+        axis.title.x = element_text(size = 16),
+        axis.title.y = element_text(size = 16),
+        axis.text = element_text(size = 12),
+        strip.text = element_text(size=12),
+        panel.grid.minor = element_blank(), 
+        panel.grid.major = element_blank()) 
+
+predtreeplot
+
+ggsave(plot = predtreeplot, filename = "Pred_tree_plot.png", dpi =300,
        height = 4.2, width = 6.5)
