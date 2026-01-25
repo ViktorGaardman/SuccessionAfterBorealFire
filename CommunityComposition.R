@@ -189,7 +189,7 @@ dist_tree <- vegdist(Tree_clean, method = "bray")
 ###Fit permanova model
 Permanova_tree <- adonis2(dist_tree ~
                             Fire_Int_Groups*Years_since_fire +
-                            Continent +
+                            Years_since_fire * Continent +
                             Temp_sc +
                             Per_sc,
                           data=metadata_tree,
@@ -245,7 +245,7 @@ ysf_starts_T <- ysf_paths_T %>%
   group_by(Continent, Fire_Int_Groups) %>%
   slice_min(YSF_interval, n = 1)
 
-#Add blackcolor to arrowheads
+#Add shape to arrowhead
 ysf_ends_T <- ysf_paths_T %>%
   group_by(Continent, Fire_Int_Groups) %>%
   slice_max(YSF_interval, n = 1)
@@ -319,91 +319,6 @@ ggsave(plot = Tree_plot, filename = "NMDS_trees.png",
        dpi = 300, width = 13, height = 5.26)
 
 
-ysf_paths <- datascores_T %>%
-  filter(Continent == "Eurasia") %>%
-  group_by(Fire_Int_Groups, YSF_interval) %>%
-  summarise(
-    NMDS1 = mean(NMDS1, na.rm = TRUE),
-    NMDS2 = mean(NMDS2, na.rm = TRUE),
-    .groups = "drop"
-  ) %>%
-  arrange(Fire_Int_Groups, YSF_interval)
-
-
-#plot by continent, YSF, and Fire intensity
-Tree_plot <- ggplot(subset(datascores_T, Continent == "Eurasia"),
-                    aes(x = NMDS1, y = NMDS2, color = Fire_Int_Groups)                                                                   color = Fire_Int_Groups)) +
-  geom_point(size = 2, aes(color = Fire_Int_Groups)) +
-  coord_fixed() + 
-  theme_bw() +
-  ggtitle("Eurasia trees") +
-  theme(legend.position="none",
-        plot.title = element_text(size = 20, hjust = 0.5),
-        axis.title.x = element_text(size = 20),
-        axis.title.y = element_text(size = 20),
-        axis.text = element_text(size = 16),
-        panel.grid.minor = element_blank(), 
-        panel.grid.major = element_blank()) + 
-  annotate("text", x = max(datascores_T$NMDS1), 
-           y = min(datascores_T$NMDS2), 
-           label = paste("Stress =", round(NMDS_tree$stress, 3)), 
-           hjust = 1.1, vjust = 0.1, size = 5) +
-  scale_color_manual(values = c("firebrick", "goldenrod", "cornflowerblue")) + 
-  labs(color = "Fire intensity") +
-  geom_path(
-    data = ysf_paths,
-    aes(x = NMDS1, y = NMDS2, group = Fire_Int_Groups, color = Fire_Int_Groups),
-    inherit.aes = FALSE,
-    arrow = arrow(type = "closed", length = unit(0.25, "cm")),
-    linewidth = 1,
-    show.legend = FALSE
-  )
-
-Tree_plot
-
-ysf_path_NA <- datascores_T %>%
-  filter(Continent == "North_America") %>%
-  group_by(Fire_Int_Groups, YSF_interval) %>%
-  summarise(
-    NMDS1 = mean(NMDS1, na.rm = TRUE),
-    NMDS2 = mean(NMDS2, na.rm = TRUE),
-    .groups = "drop"
-  ) %>%
-  arrange(Fire_Int_Groups, YSF_interval)
-
-
-#plot by continent, YSF, and Fire intensity
-Tree_plot_NA <- ggplot(subset(datascores_T, Continent == "North_America"),
-                       aes(x = NMDS1, y = NMDS2, color = Fire_Int_Groups)) +
-  geom_point(size = 2, aes(color = Fire_Int_Groups)) +
-  coord_fixed() + 
-  theme_bw() +
-  ggtitle("North America trees")+
-  theme(legend.position="right",
-        legend.text=element_text(size=20),
-        legend.title=element_text(size=22),
-        legend.direction='vertical',
-        plot.title = element_text(size = 20, hjust = 0.5),
-        axis.title.x = element_text(size = 20),
-        axis.title.y = element_blank(),
-        axis.text = element_text(size = 16),
-        panel.grid.minor = element_blank(), 
-        panel.grid.major = element_blank()) + 
-  scale_color_manual(values = c("firebrick", "goldenrod", "cornflowerblue")) + 
-  labs(color = "Fire intensity") +
-  geom_path(
-    data = ysf_path_NA,
-    aes(x = NMDS1, y = NMDS2, group = Fire_Int_Groups, color = Fire_Int_Groups),
-    inherit.aes = FALSE,
-    arrow = arrow(type = "closed", length = unit(0.25, "cm")),
-    linewidth = 1,
-    show.legend = FALSE
-  )
-
-Tree_plot_NA
-
-
-
 
 
 
@@ -421,13 +336,7 @@ Tree_plot_NA
 
 ###HERB LAYER
 
-Herbs_EU <- Ground_long %>%
-  filter(Continent == "Eurasia")
-
-Herbs_NA <- Ground_long %>%
-  filter(Continent == "North_America")
-
-Herb_matrix_NA <- Herbs_NA %>%
+Herb_matrix <- Ground_long %>%
   pivot_wider(
     id_cols = c(RowID, StudyID, Continent),
     names_from = species,      # base = original Dominant_X_Y column
@@ -436,36 +345,64 @@ Herb_matrix_NA <- Herbs_NA %>%
   )
 
 #Create NMDS
-Herb_cols_NA <- setdiff(names(Herb_matrix_NA), c("RowID", "StudyID", "Continent"))
+Herb_cols <- setdiff(names(Herb_matrix), c("RowID", "StudyID", "Continent"))
 
-Herb_filter_NA <- Herb_matrix_NA[
-  rowSums(Herb_matrix_NA[, Herb_cols_NA] != 0, na.rm = TRUE) > 0,
+Herb_filter <- Herb_matrix[
+  rowSums(Herb_matrix[, Herb_cols] != 0, na.rm = TRUE) > 0,
 ]
 
-metadata_herb_NA <- Herb_filter_NA %>%
+metadata_herb <- Herb_filter %>%
   left_join(metadata_clean, "RowID")
 
-Herb_info_NA <- Herb_filter_NA %>%
+Herb_info <- Herb_filter %>%
   select(c(StudyID, RowID, Continent))
 
-Herb_clean_NA <- Herb_filter_NA %>%
+Herb_clean <- Herb_filter %>%
   select(- c(StudyID, RowID, Continent))
 
-NMDS_herb_NA <- metaMDS(Herb_clean_NA, distance = "bray", k = 2, trymax = 1000)
+##Permanova with StudyID as a random factor
+permutations <- with(metadata_herb, how(nperm=999, blocks = StudyID.x))
 
-NMDS_herb_NA <- metaMDS(Herb_clean_NA, distance = "bray", k = 2, trymax = 1000,
-                     previous.best = NMDS_herb_EU)
+#Calculate distance matrix
+dist_herb <- vegdist(Herb_clean, method = "bray")
+
+###Fit permanova model
+Permanova_herb <- adonis2(dist_herb ~
+                            Fire_Int_Groups*Years_since_fire +
+                            Years_since_fire * Continent.x +
+                            Temp_sc +
+                            Per_sc,
+                          data=metadata_herb,
+                          permutations=permutations, method="bray")
+
+Permanova_herb
+
+anova(betadisper(dist_herb, metadata_herb$Fire_Int_Groups))
+anova(betadisper(dist_herb, metadata_herb$Continent.x))
+
+Permanova_herb_out <- as.data.frame(Permanova_herb)
+Permanova_herb_out$Term <- rownames(Permanova_herb_out)
+rownames(Permanova_herb_out) <- NULL
+
+write_xlsx(
+  Permanova_herb_out,
+  path = "PERMANOVA_results_groundlayer.xlsx"
+)
+
+NMDS_herb <- metaMDS(Herb_clean, distance = "bray", k = 2, trymax = 1000)
+
+NMDS_herb <- metaMDS(Herb_clean, distance = "bray", k = 2, trymax = 1000,
+                     previous.best = NMDS_herb)
 
 #extract the site scores
-datascores_H = as.data.frame(scores(NMDS_herb_NA)$sites)  
+datascores_H = as.data.frame(scores(NMDS_herb)$sites)  
 
 #add metadata
-datascores_H$Fire_Int_Groups = metadata_herb_NA$Fire_Int_Groups
-datascores_H$YSF_interval = metadata_herb_NA$YSF_interval
-datascores_H$SWI = metadata_herb_NA$SWI
-datascores_H$Avg_Temp = metadata_herb_NA$Avg_Temp
-datascores_H$SWI = metadata_herb_NA$SWI
-datascores_H$AvgPer = metadata_herb_NA$AvgPer
+datascores_H$Fire_Int_Groups = metadata_herb$Fire_Int_Groups
+datascores_H$YSF_interval = metadata_herb$YSF_interval
+datascores_H$Continent.x = metadata_herb$Continent.x
+datascores_H$Temp_sc = metadata_herb$Temp_sc
+datascores_H$Per_sc = metadata_herb$Per_sc
 
 
 datascores_H$Fire_Int_Groups <- factor(
@@ -473,180 +410,109 @@ datascores_H$Fire_Int_Groups <- factor(
   levels = c("High", "Medium", "Low")
 )
 
-ysf_paths <- datascores_H %>%
-  group_by(Fire_Int_Groups, YSF_interval) %>%
+#Add arrows across time
+ysf_paths_H <- datascores_H %>%
+  group_by(Continent.x, Fire_Int_Groups, YSF_interval) %>%
   summarise(
     NMDS1 = mean(NMDS1, na.rm = TRUE),
     NMDS2 = mean(NMDS2, na.rm = TRUE),
     .groups = "drop"
   ) %>%
-  arrange(Fire_Int_Groups, YSF_interval)
+  arrange(Continent.x, Fire_Int_Groups, YSF_interval)
 
+#Add a shape to arrow starts
+ysf_starts_H <- ysf_paths_H %>%
+  group_by(Continent.x, Fire_Int_Groups) %>%
+  slice_min(YSF_interval, n = 1)
 
-#plot by continent, YSF, and Fire intensity
-Herb_plot_NA <- ggplot(subset(datascores_H), aes(x = NMDS1, y = NMDS2, 
-                                      color = Fire_Int_Groups)) +
-  geom_point(size = 2, aes(color = Fire_Int_Groups)) +
-  coord_fixed() + 
-  theme_bw() +
-  ggtitle("North America herbs") +
-  theme(legend.position="right",
-        legend.text=element_text(size=20),
-        legend.title=element_text(size=22),
-        legend.direction='vertical',
-        plot.title = element_text(size = 20, hjust = 0.5),
-        axis.title.x = element_text(size = 20),
-        axis.title.y = element_text(size = 20),
-        axis.text = element_text(size = 16),
-        panel.grid.minor = element_blank(), 
-        panel.grid.major = element_blank()) + 
-  scale_color_manual(values = c("firebrick", "goldenrod", "cornflowerblue")) + 
-  labs(color = "Fire intensity") +
-  annotate("text", x = max(datascores_H$NMDS1), 
-           y = min(datascores_H$NMDS2), 
-           label = paste("Stress =", round(NMDS_herb_NA$stress, 3)), 
-           hjust = 1.1, vjust = 0.1, size = 5) +
+#Add shape to arrowhead
+ysf_ends_H <- ysf_paths_H %>%
+  group_by(Continent.x, Fire_Int_Groups) %>%
+  slice_max(YSF_interval, n = 1)
+
+Herb_plot <- ggplot(
+  datascores_H,
+  aes(x = NMDS1, y = NMDS2, color = Fire_Int_Groups)
+) +
+  geom_point(size = 2) +
   geom_path(
-    data = ysf_paths,
-    aes(x = NMDS1, y = NMDS2, group = Fire_Int_Groups, color = Fire_Int_Groups),
-    inherit.aes = FALSE,
-    arrow = arrow(type = "closed", length = unit(0.25, "cm")),
-    linewidth = 1,
-    show.legend = FALSE
-  )
-
-Herb_plot_NA
-
-ysf_path_NA <- datascores_H %>%
-  filter(Continent == "North_America") %>%
-  group_by(Fire_Int_Groups, YSF_interval) %>%
-  summarise(
-    NMDS1 = mean(NMDS1, na.rm = TRUE),
-    NMDS2 = mean(NMDS2, na.rm = TRUE),
-    .groups = "drop"
-  ) %>%
-  arrange(Fire_Int_Groups, YSF_interval)
-
-
-#plot by continent, YSF, and Fire intensity
-Herb_plot_NA <- ggplot(subset(datascores_H, Continent == "North_America"), aes(x = NMDS1, y = NMDS2, 
-                                                                      color = Fire_Int_Groups)) +
-  geom_point(size = 2, aes(color = Fire_Int_Groups)) +
-  coord_fixed() + 
-  theme_bw() +
-  ggtitle("North America herbs")+
-  theme(legend.position="right",
-        legend.text=element_text(size=20),
-        legend.title=element_text(size=22),
-        legend.direction='vertical',
-        plot.title = element_text(size = 20, hjust = 0.5),
-        axis.title.x = element_text(size = 20),
-        axis.title.y = element_blank(),
-        axis.text = element_text(size = 16),
-        panel.grid.minor = element_blank(), 
-        panel.grid.major = element_blank()) + 
-  annotate("text", x = max(datascores_H$NMDS1), 
-           y = min(datascores_H$NMDS2), 
-           label = paste("Stress =", round(NMDS_herb$stress, 3)), 
-           hjust = 1.1, vjust = 0.1, size = 5) +
-  scale_color_manual(values = c("firebrick", "goldenrod", "cornflowerblue")) + 
-  labs(color = "Fire intensity") +
-  geom_path(
-    data = ysf_path_NA,
-    aes(x = NMDS1, y = NMDS2, group = Fire_Int_Groups, color = Fire_Int_Groups),
-    inherit.aes = FALSE,
-    arrow = arrow(type = "closed", length = unit(0.25, "cm")),
-    linewidth = 1,
-    show.legend = FALSE
-  )
-
-Herb_plot_NA
-
-#Arrows for continuous variables
-env_vars <- metadata_moss %>%
-  select(Avg_Temp, AvgPer, Latitude)
-
-envfit_res <- envfit(NMDS_moss ~ ., data = env_vars, permutations = 999)
-
-# To add arrows to ggplot, first extract coordinates
-arrows_moss <- as.data.frame(scores(envfit_res, display = "vectors"))
-arrows_moss$Variable <- rownames(arrows_moss)
-
-ggplot(subset(datascores_M, continent == "Eurasia", aes(NMDS1, NMDS2))) +
-  geom_point(aes(color = Fire_Int_Groups)) +
-  geom_segment(
-    data = arrows_moss,
-    aes(x = 0, y = 0, xend = NMDS1, yend = NMDS2),
-    arrow = arrow(type = "closed", length = unit(0.25, "cm")),
+    data = ysf_paths_H,
+    aes(group = interaction(Continent.x, Fire_Int_Groups),
+        color = Fire_Int_Groups),
+    linewidth = 1
+  )+
+  geom_point(
+    data = ysf_ends_H,
+    aes(x = NMDS1, y = NMDS2, fill = Fire_Int_Groups),
+    shape = 24,
     color = "black",
-    inherit.aes = FALSE
+    size = 3,
+    stroke = 1,
+    inherit.aes = FALSE,
+    show.legend = FALSE
   ) +
-  geom_text(
-    data = arrows_moss,
-    aes(x = NMDS1 * 1.1, y = NMDS2 * 1.1, label = Variable),
-    inherit.aes = FALSE
+  geom_point(
+    data = ysf_starts_H,
+    aes(x = NMDS1, y = NMDS2, fill = Fire_Int_Groups),
+    shape = 23,
+    color = "black",
+    size = 2.5,
+    stroke = 1,
+    inherit.aes = FALSE,
+    show.legend = FALSE
+  ) +
+  facet_wrap(~ Continent.x, 
+             scales = "free_x",
+             labeller = labeller(
+               Continent.x = c(
+                 "Eurasia" = "Eurasia",
+                 "North_America" = "North America"))) +
+  theme_bw() +
+  scale_color_manual(
+    values = c("firebrick", "goldenrod", "cornflowerblue")
+  ) +
+  scale_fill_manual(
+    values = c("firebrick", "goldenrod", "cornflowerblue")
+  ) +
+  labs(color = "Fire intensity") +
+  theme(
+    plot.title = element_text(size = 20, hjust = 0.5),
+    axis.title = element_text(size = 20),
+    axis.text = element_text(size = 16),
+    strip.text = element_text(size = 18),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    legend.text = element_text(size = 16),
+    legend.title = element_text(size = 18)
+  ) +
+  annotate(
+    "text",
+    x = max(datascores_T$NMDS1),
+    y = min(datascores_T$NMDS2),
+    label = paste("Stress =", round(NMDS_tree$stress, 3)),
+    hjust = 1.1, vjust = 0.1, size = 5
   )
 
-##Permanova with StudyID as a random factor
-permutations <- with(metadata_herb_NA, how(nperm=999, blocks = StudyID.x))
+Herb_plot
 
-#Calculate distance matrix
-dist_herb <- vegdist(Herb_clean_NA, method = "bray")
-
-###Fit permanova model
-Permanova_herb_NA <- adonis2(dist_herb ~ 
-                            Avg_Temp*Fire_Int_Groups +
-                            Latitude*Fire_Int_Groups +
-                            Avg_Temp*Years_since_fire +
-                            AvgPer*Fire_Int_Groups,
-                          data=metadata_herb_NA,
-                          permutations=permutations, method="bray")
-
-Permanova_herb_NA
-
-Permanova_herb_NA_out <- as.data.frame(Permanova_herb_NA)
-Permanova_herb_NA_out$Term <- rownames(Permanova_herb_NA_out)
-rownames(Permanova_herb_NA_out) <- NULL
-
-write_xlsx(
-  Permanova_herb_NA_out,
-  path = "PERMANOVA_results_herb_NA.xlsx"
-)
-
-#Homogeneity OK
-Assumption <- anova(betadisper(dist_herb, metadata_herb_NA$Fire_Int_Groups))
+ggsave(plot = Herb_plot, filename = "NMDS_herbs.png",
+       dpi = 300, width = 13, height = 5.26)
 
 
 
 
+###MOSSES
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-########################
-#MOSSES
 Moss_matrix <- Mosses_long %>%
   pivot_wider(
-    id_cols = c(RowID, StudyID),
+    id_cols = c(RowID, StudyID, Continent),
     names_from = species,      # base = original Dominant_X_Y column
     values_from = cover,
     values_fill = 0
   )
 
 #Create NMDS
-Moss_cols <- setdiff(names(Moss_matrix), c("RowID", "StudyID"))
+Moss_cols <- setdiff(names(Moss_matrix), c("RowID", "StudyID", "Continent"))
 
 Moss_filter <- Moss_matrix[
   rowSums(Moss_matrix[, Moss_cols] != 0, na.rm = TRUE) > 0,
@@ -656,168 +522,150 @@ metadata_moss <- Moss_filter %>%
   left_join(metadata_clean, "RowID")
 
 Moss_info <- Moss_filter %>%
-  select(c(StudyID, RowID))
+  select(c(StudyID, RowID, Continent))
 
-moss_clean <- Moss_filter %>%
-  select(- c(StudyID, RowID))
-
-NMDS_moss <- metaMDS(moss_clean, distance = "bray", k = 2, trymax = 1000)
-
-NMDS_moss <- metaMDS(moss_clean, distance = "bray", k = 2, trymax = 1000,
-                     previous.best = NMDS_moss)
+Moss_clean <- Moss_filter %>%
+  select(- c(StudyID, RowID, Continent))
 
 ##Permanova with StudyID as a random factor
 permutations <- with(metadata_moss, how(nperm=999, blocks = StudyID.x))
 
 #Calculate distance matrix
-dist_moss <- vegdist(moss_clean, method = "bray")
+dist_moss <- vegdist(Moss_clean, method = "bray")
 
 ###Fit permanova model
-Permanova_moss <- adonis2(dist_moss ~ Continent*Years_since_fire*Fire_Int_Groups +
-                            Avg_Temp*Fire_Int_Groups +
-                            AvgPer*Fire_Int_Groups +
-                            Latitude*Fire_Int_Groups +
-                            Avg_Temp*Years_since_fire +
-                            AvgPer* Years_since_fire +
-                            Latitude * Years_since_fire +
-                          Avg_Temp * Continent +
-                            AvgPer * Continent +
-                            Latitude * Continent,
+Permanova_moss <- adonis2(dist_moss ~
+                            Fire_Int_Groups*Years_since_fire +
+                            Years_since_fire * Continent.x +
+                            Temp_sc +
+                            Per_sc,
                           data=metadata_moss,
                           permutations=permutations, method="bray")
 
 Permanova_moss
 
-#Homogeneity OK
-Assumption <- anova(betadisper(dist_moss, metadata_moss$Fire_Int_Groups))
-Assumption2 <- anova(betadisper(dist_moss, metadata_moss$Continent))
+anova(betadisper(dist_moss, metadata_moss$Fire_Int_Groups))
+anova(betadisper(dist_moss, metadata_moss$Continent.x))
+
+Permanova_moss_out <- as.data.frame(Permanova_moss)
+Permanova_moss_out$Term <- rownames(Permanova_moss_out)
+rownames(Permanova_moss_out) <- NULL
+
+write_xlsx(
+  Permanova_moss_out,
+  path = "PERMANOVA_results_bryophytes.xlsx"
+)
+
+NMDS_moss <- metaMDS(Moss_clean, distance = "bray", k = 2, trymax = 1000)
+
+NMDS_moss <- metaMDS(Moss_clean, distance = "bray", k = 2, trymax = 1000,
+                     previous.best = NMDS_herb)
 
 #extract the site scores
-datascores_M = as.data.frame(scores(NMDS_moss)$sites)  
+datascores_H = as.data.frame(scores(NMDS_herb)$sites)  
 
 #add metadata
-datascores_M$Fire_Int_Groups = metadata_moss$Fire_Int_Groups
-datascores_M$YSF_interval = metadata_moss$YSF_interval
-datascores_M$SWI = metadata_moss$SWI
-datascores_M$Avg_Temp = metadata_moss$Avg_Temp
-datascores_M$SWI = metadata_moss$SWI
-datascores_M$AvgPer = metadata_moss$AvgPer
-datascores_M$Continent = metadata_moss$Continent
+datascores_H$Fire_Int_Groups = metadata_herb$Fire_Int_Groups
+datascores_H$YSF_interval = metadata_herb$YSF_interval
+datascores_H$Continent.x = metadata_herb$Continent.x
+datascores_H$Temp_sc = metadata_herb$Temp_sc
+datascores_H$Per_sc = metadata_herb$Per_sc
 
-datascores_M$Fire_Int_Groups <- factor(
-  datascores_M$Fire_Int_Groups,
+
+datascores_H$Fire_Int_Groups <- factor(
+  datascores_H$Fire_Int_Groups,
   levels = c("High", "Medium", "Low")
 )
 
-
-
-ysf_paths <- datascores_M %>%
-  filter(Continent == "Eurasia") %>%
-  group_by(Fire_Int_Groups, YSF_interval) %>%
+#Add arrows across time
+ysf_paths_H <- datascores_H %>%
+  group_by(Continent.x, Fire_Int_Groups, YSF_interval) %>%
   summarise(
     NMDS1 = mean(NMDS1, na.rm = TRUE),
     NMDS2 = mean(NMDS2, na.rm = TRUE),
     .groups = "drop"
   ) %>%
-  arrange(Fire_Int_Groups, YSF_interval)
+  arrange(Continent.x, Fire_Int_Groups, YSF_interval)
 
+#Add a shape to arrow starts
+ysf_starts_H <- ysf_paths_H %>%
+  group_by(Continent.x, Fire_Int_Groups) %>%
+  slice_min(YSF_interval, n = 1)
 
-#plot by continent, YSF, and Fire intensity
-Moss_plot <- ggplot(subset(datascores_M, Continent == "Eurasia"), aes(x = NMDS1, y = NMDS2, 
-                                                                      color = Fire_Int_Groups)) +
-  geom_point(size = 2, aes(color = Fire_Int_Groups)) +
-  coord_fixed() + 
-  theme_bw() +
-  ggtitle("Eurasia mosses") +
-  theme(legend.position="none",
-        plot.title = element_text(size = 20, hjust = 0.5),
-        axis.title.x = element_text(size = 20),
-        axis.title.y = element_text(size = 20),
-        axis.text = element_text(size = 16),
-        panel.grid.minor = element_blank(), 
-        panel.grid.major = element_blank()) + 
-  annotate("text", x = max(datascores_M$NMDS1), 
-           y = min(datascores_M$NMDS2), 
-           label = paste("Stress =", round(NMDS_moss$stress, 3)), 
-           hjust = 1.1, vjust = 0.1, size = 5) +
-  scale_color_manual(values = c("firebrick", "goldenrod", "cornflowerblue")) + 
-  labs(color = "Fire intensity") +
+#Add shape to arrowhead
+ysf_ends_H <- ysf_paths_H %>%
+  group_by(Continent.x, Fire_Int_Groups) %>%
+  slice_max(YSF_interval, n = 1)
+
+Herb_plot <- ggplot(
+  datascores_H,
+  aes(x = NMDS1, y = NMDS2, color = Fire_Int_Groups)
+) +
+  geom_point(size = 2) +
   geom_path(
-    data = ysf_paths,
-    aes(x = NMDS1, y = NMDS2, group = Fire_Int_Groups, color = Fire_Int_Groups),
-    inherit.aes = FALSE,
-    arrow = arrow(type = "closed", length = unit(0.25, "cm")),
-    linewidth = 1,
-    show.legend = FALSE
-  )
-
-Moss_plot
-
-ysf_path_NA <- datascores_M %>%
-  filter(Continent == "North_America") %>%
-  group_by(Fire_Int_Groups, YSF_interval) %>%
-  summarise(
-    NMDS1 = mean(NMDS1, na.rm = TRUE),
-    NMDS2 = mean(NMDS2, na.rm = TRUE),
-    .groups = "drop"
-  ) %>%
-  arrange(Fire_Int_Groups, YSF_interval)
-
-
-#plot by continent, YSF, and Fire intensity
-moss_plot_NA <- ggplot(subset(datascores_M, Continent == "North_America"), aes(x = NMDS1, y = NMDS2, 
-                                                                               color = Fire_Int_Groups)) +
-  geom_point(size = 2, aes(color = Fire_Int_Groups)) +
-  coord_fixed() + 
-  theme_bw() +
-  ggtitle("North America mosses")+
-  theme(legend.position="right",
-        legend.text=element_text(size=20),
-        legend.title=element_text(size=22),
-        legend.direction='vertical',
-        plot.title = element_text(size = 20, hjust = 0.5),
-        axis.title.x = element_text(size = 20),
-        axis.title.y = element_blank(),
-        axis.text = element_text(size = 16),
-        panel.grid.minor = element_blank(), 
-        panel.grid.major = element_blank()) + 
-  scale_color_manual(values = c("firebrick", "goldenrod", "cornflowerblue")) + 
-  labs(color = "Fire intensity") +
-  geom_path(
-    data = ysf_path_NA,
-    aes(x = NMDS1, y = NMDS2, group = Fire_Int_Groups, color = Fire_Int_Groups),
-    inherit.aes = FALSE,
-    arrow = arrow(type = "closed", length = unit(0.25, "cm")),
-    linewidth = 1,
-    show.legend = FALSE
-  )
-
-moss_plot_NA
-
-#Arrows for continuous variables
-env_vars <- metadata_moss %>%
-  select(Avg_Temp, AvgPer, Latitude)
-
-envfit_res <- envfit(NMDS_moss ~ ., data = env_vars, permutations = 999)
-
-# To add arrows to ggplot, first extract coordinates
-arrows_moss <- as.data.frame(scores(envfit_res, display = "vectors"))
-arrows_moss$Variable <- rownames(arrows_moss)
-
-ggplot(subset(datascores_M, continent == "Eurasia", aes(NMDS1, NMDS2))) +
-  geom_point(aes(color = Fire_Int_Groups)) +
-  geom_segment(
-    data = arrows_moss,
-    aes(x = 0, y = 0, xend = NMDS1, yend = NMDS2),
-    arrow = arrow(type = "closed", length = unit(0.25, "cm")),
+    data = ysf_paths_H,
+    aes(group = interaction(Continent.x, Fire_Int_Groups),
+        color = Fire_Int_Groups),
+    linewidth = 1
+  )+
+  geom_point(
+    data = ysf_ends_H,
+    aes(x = NMDS1, y = NMDS2, fill = Fire_Int_Groups),
+    shape = 24,
     color = "black",
-    inherit.aes = FALSE
+    size = 3,
+    stroke = 1,
+    inherit.aes = FALSE,
+    show.legend = FALSE
   ) +
-  geom_text(
-    data = arrows_moss,
-    aes(x = NMDS1 * 1.1, y = NMDS2 * 1.1, label = Variable),
-    inherit.aes = FALSE
+  geom_point(
+    data = ysf_starts_H,
+    aes(x = NMDS1, y = NMDS2, fill = Fire_Int_Groups),
+    shape = 23,
+    color = "black",
+    size = 2.5,
+    stroke = 1,
+    inherit.aes = FALSE,
+    show.legend = FALSE
+  ) +
+  facet_wrap(~ Continent.x, 
+             scales = "free_x",
+             labeller = labeller(
+               Continent.x = c(
+                 "Eurasia" = "Eurasia",
+                 "North_America" = "North America"))) +
+  theme_bw() +
+  scale_color_manual(
+    values = c("firebrick", "goldenrod", "cornflowerblue")
+  ) +
+  scale_fill_manual(
+    values = c("firebrick", "goldenrod", "cornflowerblue")
+  ) +
+  labs(color = "Fire intensity") +
+  theme(
+    plot.title = element_text(size = 20, hjust = 0.5),
+    axis.title = element_text(size = 20),
+    axis.text = element_text(size = 16),
+    strip.text = element_text(size = 18),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    legend.text = element_text(size = 16),
+    legend.title = element_text(size = 18)
+  ) +
+  annotate(
+    "text",
+    x = max(datascores_T$NMDS1),
+    y = min(datascores_T$NMDS2),
+    label = paste("Stress =", round(NMDS_tree$stress, 3)),
+    hjust = 1.1, vjust = 0.1, size = 5
   )
+
+Herb_plot
+
+ggsave(plot = Herb_plot, filename = "NMDS_herbs.png",
+       dpi = 300, width = 13, height = 5.26)
+
+
 
 ##NMDS plots combined
 
