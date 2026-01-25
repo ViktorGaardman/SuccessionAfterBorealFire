@@ -97,13 +97,19 @@ metadata_clean$YSF_interval <- factor(
 metadata_clean <- metadata_clean %>%
   mutate(across(c("Continent", "Fire_Int_Groups"), as.factor))
 
+#Standardize temp and percipitation
+metadata_clean$Temp_sc <- as.numeric(scale(metadata_clean$Avg_Temp, center = TRUE, scale = TRUE))
+metadata_clean$Per_sc <- as.numeric(scale(metadata_clean$AvgPer, center = TRUE, scale = TRUE))
+
+
 #Check collinearity of continuous variables
 pond_corr <- metadata_clean %>% 
-  select(SWI, Avg_Temp, AvgPer, Latitude) %>%
+  select(SWI, Temp_sc, Per_sc, Latitude) %>%
   cor(use = "pairwise.complete.obs")  # Avoids NA issues
 
 # Plot the correlation matrix
 ggcorrplot(pond_corr, lab = TRUE, type = "lower", hc.order = TRUE)
+
 
 #Split dataset into trees/shrubs, groundlayer plants, and mosses
 
@@ -149,29 +155,6 @@ Mosses_long <- species_long %>%
 
 #TREES
 
-##Permanova with StudyID as a random factor
-permutations <- with(metadata_tree, how(nperm=999, blocks = StudyID.x))
-
-#Calculate distance matrix
-dist_tree <- vegdist(Tree_clean, method = "bray")
-
-###Fit permanova model
-Permanova_tree <- adonis2(dist_tree ~Continent*Years_since_fire*Fire_Int_Groups +
-                            Avg_Temp*Cont +
-                            SWI + 
-                            Latitude +
-                            AvgPer,
-                          data=metadata_tree,
-                          permutations=permutations, method="bray")
-
-Permanova_tree
-
-#Split by Continent
-Tree_EU <- Trees_long %>%
-  filter(Continent == "Eurasia")
-Tree_NA <- Trees_long %>%
-  filter(Continent == "North_America")
-
 Tree_matrix <- Trees_long %>%
   pivot_wider(
     id_cols = c(RowID, StudyID),
@@ -197,29 +180,144 @@ Tree_info <- Tree_filter %>%
 Tree_clean <- Tree_filter %>%
   select(- c(StudyID, RowID))
 
-NMDS_tree_EU <- metaMDS(Tree_clean, distance = "bray", k = 2, trymax = 1000)
+##Permanova with StudyID as a random factor
+permutations <- with(metadata_tree, how(nperm=999, blocks = StudyID.x))
 
-NMDS_tree_EU <- metaMDS(Tree_clean, distance = "bray", k = 2, trymax = 1000,
-                    previous.best = NMDS_tree_EU)
+#Calculate distance matrix
+dist_tree <- vegdist(Tree_clean, method = "bray")
+
+###Fit permanova model
+Permanova_tree <- adonis2(dist_tree ~
+                            Fire_Int_Groups*Years_since_fire +
+                            Continent +
+                            Temp_sc +
+                            Per_sc,
+                          data=metadata_tree,
+                          permutations=permutations, method="bray")
+
+Permanova_tree
+
+anova(betadisper(dist_tree, metadata_tree$Fire_Int_Groups))
+anova(betadisper(dist_tree, metadata_tree$Continent))
+
+Permanova_tree_out <- as.data.frame(Permanova_tree)
+Permanova_tree_out$Term <- rownames(Permanova_tree_out)
+rownames(Permanova_tree_out) <- NULL
+
+write_xlsx(
+  Permanova_tree_out,
+  path = "PERMANOVA_results_trees&shrubs.xlsx"
+)
+
+#NMDS
+NMDS_tree <- metaMDS(Tree_clean, distance = "bray", k = 2, trymax = 5000)
+
+NMDS_tree <- metaMDS(Tree_clean, distance = "bray", k = 2, trymax = 5000,
+                    previous.best = NMDS_tree)
 
 #extract the site scores
-datascores_T_EU = as.data.frame(scores(NMDS_tree_EU)$sites)  
+datascores_T = as.data.frame(scores(NMDS_tree)$sites)  
 
 #add metadata
-datascores_T_EU$Fire_Int_Groups = metadata_tree_EU$Fire_Int_Groups
-datascores_T_EU$YSF_interval = metadata_tree_EU$YSF_interval
-datascores_T_EU$SWI = metadata_tree_EU$SWI
-
-
-datascores_T$Avg_Temp = metadata_tree$Avg_Temp
-datascores_T$SWI = metadata_tree$SWI
-datascores_T$AvgPer = metadata_tree$AvgPer
+datascores_T$Fire_Int_Groups = metadata_tree$Fire_Int_Groups
+datascores_T$YSF_interval = metadata_tree$YSF_interval
+datascores_T$Temp_sc = metadata_tree$Temp_sc
+datascores_T$Temp_sc = metadata_tree$Temp_sc
 datascores_T$Continent = metadata_tree$Continent
 
 datascores_T$Fire_Int_Groups <- factor(
   datascores_T$Fire_Int_Groups,
   levels = c("High", "Medium", "Low")
 )
+
+#Add arrows across time
+ysf_paths_T <- datascores_T %>%
+  group_by(Continent, Fire_Int_Groups, YSF_interval) %>%
+  summarise(
+    NMDS1 = mean(NMDS1, na.rm = TRUE),
+    NMDS2 = mean(NMDS2, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(Continent, Fire_Int_Groups, YSF_interval)
+
+#Add a shape to arrow starts
+ysf_starts_T <- ysf_paths_T %>%
+  group_by(Continent, Fire_Int_Groups) %>%
+  slice_min(YSF_interval, n = 1)
+
+#Add blackcolor to arrowheads
+ysf_ends_T <- ysf_paths_T %>%
+  group_by(Continent, Fire_Int_Groups) %>%
+  slice_max(YSF_interval, n = 1)
+
+Tree_plot <- ggplot(
+  datascores_T,
+  aes(x = NMDS1, y = NMDS2, color = Fire_Int_Groups)
+) +
+  geom_point(size = 2) +
+  geom_path(
+    data = ysf_paths_T,
+    aes(group = interaction(Continent, Fire_Int_Groups),
+        color = Fire_Int_Groups),
+    linewidth = 1
+  )+
+  geom_point(
+    data = ysf_ends_T,
+    aes(x = NMDS1, y = NMDS2, fill = Fire_Int_Groups),
+    shape = 24,
+    color = "black",
+    size = 3,
+    stroke = 1,
+    inherit.aes = FALSE,
+    show.legend = FALSE
+  ) +
+  geom_point(
+    data = ysf_starts_T,
+    aes(x = NMDS1, y = NMDS2, fill = Fire_Int_Groups),
+    shape = 23,
+    color = "black",
+    size = 2.5,
+    stroke = 1,
+    inherit.aes = FALSE,
+    show.legend = FALSE
+  ) +
+  facet_wrap(~ Continent, 
+             scales = "free_x",
+             labeller = labeller(
+               Continent = c(
+                 "Eurasia" = "Eurasia",
+                 "North_America" = "North America"))) +
+  theme_bw() +
+  scale_color_manual(
+    values = c("firebrick", "goldenrod", "cornflowerblue")
+  ) +
+  scale_fill_manual(
+    values = c("firebrick", "goldenrod", "cornflowerblue")
+  ) +
+  labs(color = "Fire intensity") +
+  theme(
+    plot.title = element_text(size = 20, hjust = 0.5),
+    axis.title = element_text(size = 20),
+    axis.text = element_text(size = 16),
+    strip.text = element_text(size = 18),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    legend.text = element_text(size = 16),
+    legend.title = element_text(size = 18)
+  ) +
+  annotate(
+    "text",
+    x = max(datascores_T$NMDS1),
+    y = min(datascores_T$NMDS2),
+    label = paste("Stress =", round(NMDS_tree$stress, 3)),
+    hjust = 1.1, vjust = 0.1, size = 5
+  )
+
+Tree_plot
+
+ggsave(plot = Tree_plot, filename = "NMDS_trees.png",
+       dpi = 300, width = 13, height = 5.26)
+
 
 ysf_paths <- datascores_T %>%
   filter(Continent == "Eurasia") %>%
@@ -233,8 +331,8 @@ ysf_paths <- datascores_T %>%
 
 
 #plot by continent, YSF, and Fire intensity
-Tree_plot <- ggplot(subset(datascores_T, Continent == "Eurasia"), aes(x = NMDS1, y = NMDS2, 
-                                                                      color = Fire_Int_Groups)) +
+Tree_plot <- ggplot(subset(datascores_T, Continent == "Eurasia"),
+                    aes(x = NMDS1, y = NMDS2, color = Fire_Int_Groups)                                                                   color = Fire_Int_Groups)) +
   geom_point(size = 2, aes(color = Fire_Int_Groups)) +
   coord_fixed() + 
   theme_bw() +
@@ -275,8 +373,8 @@ ysf_path_NA <- datascores_T %>%
 
 
 #plot by continent, YSF, and Fire intensity
-Tree_plot_NA <- ggplot(subset(datascores_T, Continent == "North_America"), aes(x = NMDS1, y = NMDS2, 
-                                                                               color = Fire_Int_Groups)) +
+Tree_plot_NA <- ggplot(subset(datascores_T, Continent == "North_America"),
+                       aes(x = NMDS1, y = NMDS2, color = Fire_Int_Groups)) +
   geom_point(size = 2, aes(color = Fire_Int_Groups)) +
   coord_fixed() + 
   theme_bw() +
@@ -303,28 +401,6 @@ Tree_plot_NA <- ggplot(subset(datascores_T, Continent == "North_America"), aes(x
   )
 
 Tree_plot_NA
-
-##Permanova with StudyID as a random factor
-permutations <- with(metadata_tree, how(nperm=999, blocks = StudyID.x))
-
-#Calculate distance matrix
-dist_tree <- vegdist(Tree_clean, method = "bray")
-
-###Fit permanova model
-Permanova_tree <- adonis2(dist_tree ~ Continent*Years_since_fire*Fire_Int_Groups +
-                            Avg_Temp +
-                            SWI +
-                            Latitude +
-                            AvgPer,
-                          data=metadata_tree,
-                         permutations=permutations, method="bray")
-
-Permanova_tree
-
-#Check assumption of homogeneity of multivariate dispersion OK
-Assumption <- anova(betadisper(dist_tree, metadata_tree$Fire_Int_Groups))
-Assumption2 <- anova(betadisper(dist_tree, metadata_tree$Continent))
-
 
 
 
