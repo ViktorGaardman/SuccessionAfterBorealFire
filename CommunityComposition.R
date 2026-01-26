@@ -1,14 +1,11 @@
 #Step 1. Load packages
 library(tidyverse)
 library(vegan)
-library(lme4)
-library(car)
-library(ggeffects)
-library(performance)
-library(grid)
 library(ggcorrplot)
 library(patchwork)
 library(writexl)
+
+rm(list=ls())
 
 #Step 2. Load raw data and divide into metadata and species matrix
 df <- read.csv ("Clean_Data.csv", sep = ";")
@@ -100,7 +97,6 @@ metadata_clean <- metadata_clean %>%
 #Standardize temp and percipitation
 metadata_clean$Temp_sc <- as.numeric(scale(metadata_clean$Avg_Temp, center = TRUE, scale = TRUE))
 metadata_clean$Per_sc <- as.numeric(scale(metadata_clean$AvgPer, center = TRUE, scale = TRUE))
-
 
 #Check collinearity of continuous variables
 pond_corr <- metadata_clean %>% 
@@ -295,11 +291,13 @@ Tree_plot <- ggplot(
     values = c("firebrick", "goldenrod", "cornflowerblue")
   ) +
   labs(color = "Fire intensity") +
+  ggtitle("Trees & shrubs")+
   theme(
     plot.title = element_text(size = 20, hjust = 0.5),
     axis.title = element_text(size = 20),
     axis.text = element_text(size = 16),
     strip.text = element_text(size = 18),
+    axis.title.x = element_blank(),
     panel.grid.major = element_blank(),
     panel.grid.minor = element_blank(),
     legend.text = element_text(size = 16),
@@ -317,14 +315,6 @@ Tree_plot
 
 ggsave(plot = Tree_plot, filename = "NMDS_trees.png",
        dpi = 300, width = 13, height = 5.26)
-
-
-
-
-
-
-
-
 
 
 
@@ -475,6 +465,7 @@ Herb_plot <- ggplot(
     values = c("firebrick", "goldenrod", "cornflowerblue")
   ) +
   labs(color = "Fire intensity") +
+  ggtitle("Ground layer")+
   theme(
     plot.title = element_text(size = 20, hjust = 0.5),
     axis.title = element_text(size = 20),
@@ -483,13 +474,14 @@ Herb_plot <- ggplot(
     panel.grid.major = element_blank(),
     panel.grid.minor = element_blank(),
     legend.text = element_text(size = 16),
-    legend.title = element_text(size = 18)
+    legend.title = element_text(size = 18),
+    legend.position = "none"
   ) +
   annotate(
     "text",
-    x = max(datascores_T$NMDS1),
-    y = min(datascores_T$NMDS2),
-    label = paste("Stress =", round(NMDS_tree$stress, 3)),
+    x = max(datascores_H$NMDS1),
+    y = min(datascores_H$NMDS2),
+    label = paste("Stress =", round(NMDS_herb$stress, 3)),
     hjust = 1.1, vjust = 0.1, size = 5
   )
 
@@ -498,10 +490,15 @@ Herb_plot
 ggsave(plot = Herb_plot, filename = "NMDS_herbs.png",
        dpi = 300, width = 13, height = 5.26)
 
+#combined plot
+combinedNMDS <- Tree_plot/Herb_plot
+combinedNMDS
 
-
+ggsave(plot = combinedNMDS, filename = "NMDS_plots.png",
+       dpi = 300, height = 7.89, width = 8.66)
 
 ###MOSSES
+##INSUFFICENT DATA TO MAKE ANY ANALYSES
 
 Moss_matrix <- Mosses_long %>%
   pivot_wider(
@@ -527,11 +524,22 @@ Moss_info <- Moss_filter %>%
 Moss_clean <- Moss_filter %>%
   select(- c(StudyID, RowID, Continent))
 
+#To aid model fit and account for species_sp, we group all mosses to genus level
+
+Moss_genus <- Moss_clean %>%
+  tibble::rownames_to_column("row") %>%
+  pivot_longer(-row, names_to = "species", values_to = "value") %>%
+  mutate(genus = sub("_.*", "", species)) %>%
+  group_by(row, genus) %>%
+  summarise(value = sum(value), .groups = "drop") %>%
+  pivot_wider(names_from = genus, values_from = value) %>%
+  column_to_rownames("row")
+
 ##Permanova with StudyID as a random factor
 permutations <- with(metadata_moss, how(nperm=999, blocks = StudyID.x))
 
 #Calculate distance matrix
-dist_moss <- vegdist(Moss_clean, method = "bray")
+dist_moss <- vegdist(Moss_genus, method = "bray")
 
 ###Fit permanova model
 Permanova_moss <- adonis2(dist_moss ~
@@ -559,6 +567,11 @@ write_xlsx(
 NMDS_moss <- metaMDS(Moss_clean, distance = "bray", k = 2, trymax = 1000)
 
 NMDS_moss <- metaMDS(Moss_clean, distance = "bray", k = 2, trymax = 1000,
+                     previous.best = NMDS_herb)
+
+NMDS_moss_genus <- metaMDS(Moss_clean, distance = "bray", k = 2, trymax = 1000)
+
+NMDS_moss_genus <- metaMDS(Moss_clean, distance = "bray", k = 2, trymax = 5000,
                      previous.best = NMDS_herb)
 
 #extract the site scores
@@ -689,3 +702,217 @@ ggsave(plot = Herb_plot, filename = "EUHerb_NMDS.png", dpi = 300,
        height = 5.26, width = 13)
 ggsave(plot = Herb_plot_NA, filename = "NAHerb_NMDS.png", dpi = 300,
        height = 5.26, width = 13)
+
+
+#Dominating species per group after fire
+#Make a plot showing the two/three (?)species with the highest mean cover
+#Per plant group
+
+#Use species_long => split by continent =>
+#Add metadata => mean values per species and time_since_fire*fire intensity combination
+#plot and show as a list in paper
+#Run on genus level to make it more readable
+
+species_long_genus <- species_long %>%
+  mutate(genus = sub("_.*", "", species)) %>%
+  group_by(RowID, genus)
+
+alldata <- species_long_genus %>%
+  left_join(metadata_clean, 'RowID')
+
+summed <- alldata %>%
+  group_by(Continent.x, Fire_Int_Groups, YSF_interval, genus) %>%
+  summarise(
+    meancov = mean(cover),
+    .groups = "drop"
+  ) 
+
+summed_top5 <- summed %>%
+  group_by(Continent.x, Fire_Int_Groups, YSF_interval) %>%
+  slice_max(meancov, n = 5, with_ties = FALSE) %>%
+  ungroup()
+
+levels(summed_top5$YSF_interval) <- c(
+  "1",
+  "2",
+  "3",
+  "4",
+  "6-7",
+  "8-9",
+  "10-22"
+)
+
+
+summed_top5$YSF_interval <- as.numeric(summed_top5$YSF_interval)
+
+summed_top5_low <- summed_top5 %>%
+  filter(Fire_Int_Groups == "Low")
+
+dominanceplot_Low_EU <- ggplot(subset(summed_top5_low, Continent.x == "Eurasia"), aes(x = YSF_interval, y = meancov, 
+                                         color = genus)) +
+  geom_point(size = 3) +
+  geom_line(aes(color = genus), size = 1) +
+  theme_bw() +
+  scale_color_discrete() +
+  labs(color = "Genus") +
+    ggtitle("Europe", subtitle = "Low intensity fire") +
+  xlab("Years since fire") +
+  ylab("Mean cover") +
+  scale_y_continuous(limits = c(0, 100)) +
+  theme(
+    plot.title = element_text(size = 20, hjust = 0.5),
+    plot.subtitle = element_text(size = 16, hjust = 0.5),
+    axis.title = element_blank(),
+    axis.text = element_text(size = 16),
+    strip.text = element_text(size = 18),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    legend.text = element_text(size = 16),
+    legend.title = element_text(size = 18)
+  ) 
+
+dominanceplot_Low_EU
+
+dominanceplot_Low_NA <- ggplot(subset(summed_top5_low, Continent.x == "North_America"), aes(x = YSF_interval, y = meancov, 
+                                                                                      color = genus)) +
+  geom_point(size = 3) +
+  geom_line(aes(color = genus), size = 1) +
+  theme_bw() +
+  scale_color_discrete() +
+  labs(color = "Genus") +
+  ggtitle("North America", subtitle = "Low intensity fire") +
+  xlab("Years since fire") +
+  ylab("Mean cover") +
+  scale_y_continuous(limits = c(0, 100)) +
+  theme(
+    plot.title = element_text(size = 20, hjust = 0.5),
+    plot.subtitle = element_text(size = 16, hjust = 0.5),
+    axis.title = element_blank(),
+    axis.text = element_text(size = 16),
+    strip.text = element_text(size = 18),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    legend.text = element_text(size = 16),
+    legend.title = element_text(size = 18)
+  ) 
+
+dominanceplot_Low_NA
+
+summed_top5_medium <- summed_top5 %>%
+  filter(Fire_Int_Groups == "Medium")
+
+dominanceplot_medium_EU <- ggplot(subset(summed_top5_medium, Continent.x == "Eurasia"), aes(x = YSF_interval, y = meancov, 
+                                                                                      color = genus)) +
+  geom_point(size = 3) +
+  geom_line(aes(color = genus), size = 1) +
+  theme_bw() +
+  scale_color_discrete() +
+  labs(color = "Genus") +
+  ggtitle("Europe", subtitle = "Medium intensity fire") +
+  xlab("Years since fire") +
+  ylab("Mean cover") +
+  scale_y_continuous(limits = c(0, 100)) +
+  theme(
+    plot.title = element_blank(),
+    plot.subtitle = element_text(size = 16, hjust = 0.5),
+    axis.title.y = element_text(size = 20),
+    axis.title.x = element_blank(),
+    axis.text = element_text(size = 16),
+    strip.text = element_text(size = 18),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    legend.text = element_text(size = 16),
+    legend.title = element_text(size = 18)
+  ) 
+
+dominanceplot_medium_EU
+
+dominanceplot_medium_NA <- ggplot(subset(summed_top5_medium, Continent.x == "North_America"), aes(x = YSF_interval, y = meancov, 
+                                                                                            color = genus)) +
+  geom_point(size = 3) +
+  geom_line(aes(color = genus), size = 1) +
+  theme_bw() +
+  scale_color_discrete() +
+  labs(color = "Genus") +
+  ggtitle("North America", subtitle = "Medium intensity fire") +
+  xlab("Years since fire") +
+  ylab("Mean cover") +
+  scale_y_continuous(limits = c(0, 100)) +
+  theme(
+    plot.title = element_blank(),
+    plot.subtitle = element_text(size = 16, hjust = 0.5),
+    axis.title = element_blank(),
+    axis.text = element_text(size = 16),
+    strip.text = element_text(size = 18),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    legend.text = element_text(size = 16),
+    legend.title = element_text(size = 18)
+  ) 
+
+dominanceplot_medium_NA
+
+
+summed_top5_high <- summed_top5 %>%
+  filter(Fire_Int_Groups == "High")
+
+dominanceplot_high_EU <- ggplot(subset(summed_top5_high, Continent.x == "Eurasia"), aes(x = YSF_interval, y = meancov, 
+                                                                                            color = genus)) +
+  geom_point(size = 3) +
+  geom_line(aes(color = genus), size = 1) +
+  theme_bw() +
+  scale_color_discrete() +
+  labs(color = "Genus") +
+  ggtitle("Europe", subtitle = "High intensity fire") +
+  xlab("Years since fire") +
+  ylab("Mean cover") +
+  scale_y_continuous(limits = c(0, 100)) +
+  theme(
+    plot.title = element_blank(),
+    plot.subtitle = element_text(size = 16, hjust = 0.5),
+    axis.title.x = element_text(size = 20),
+    axis.title.y = element_blank(),
+    axis.text = element_text(size = 16),
+    strip.text = element_text(size = 18),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    legend.text = element_text(size = 16),
+    legend.title = element_text(size = 18)
+  ) 
+
+dominanceplot_high_EU
+
+dominanceplot_high_NA <- ggplot(subset(summed_top5_high, Continent.x == "North_America"), aes(x = YSF_interval, y = meancov, 
+                                                                                                  color = genus)) +
+  geom_point(size = 3) +
+  geom_line(aes(color = genus), size = 1) +
+  theme_bw() +
+  scale_color_discrete() +
+  labs(color = "Genus") +
+  ggtitle("North America", subtitle = "High intensity fire") +
+  xlab("Years since fire") +
+  ylab("Mean cover") +
+  scale_y_continuous(limits = c(0, 100)) +
+  theme(
+    plot.title = element_blank(),
+    plot.subtitle = element_text(size = 16, hjust = 0.5),
+    axis.title.x = element_text(size = 20),
+    axis.title.y = element_blank(),
+    axis.text = element_text(size = 16),
+    strip.text = element_text(size = 18),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    legend.text = element_text(size = 16),
+    legend.title = element_text(size = 18)
+  ) 
+
+dominanceplot_high_NA
+
+CompleteDominancePlot <- (dominanceplot_Low_EU|dominanceplot_Low_NA)/
+  (dominanceplot_medium_EU|dominanceplot_medium_NA)/
+  (dominanceplot_high_EU|dominanceplot_high_NA)
+
+CompleteDominancePlot
+
+ggsave(plot = CompleteDominancePlot, filename = "dominancePlots.png",
+       dpi = 300, width = 13, height = 15.78)
