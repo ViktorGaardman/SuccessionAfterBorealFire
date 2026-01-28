@@ -6,6 +6,9 @@ library(DHARMa)
 library(glmmTMB)
 library(patchwork)
 library(lme4)
+library(performance)
+library(nlme)
+library(emmeans)
 
 rm(list=ls())
 
@@ -216,6 +219,11 @@ df_filled <- df_traits %>%
 
 df_filled$species <- as.factor(df_filled$species)
 
+df_filled <- df_filled %>%
+  mutate(
+    studysize = Plot_size * Sample_size
+  )
+
 #Group into ground/treeshrub layer
 Ground_df <-df_filled %>%
   filter(PlantGroup %in% c("dwarfshrub" ,"herb", "graminoid"))
@@ -227,74 +235,88 @@ Tree_df <-df_filled %>%
 #Calculate community weighted means
 ground.cwm <-   # New dataframe where we can inspect the result
   Ground_df %>%   # First step in the next string of statements
-  group_by(RowID, Temp_sc, Per_sc, Fire_Int_Groups,
+  group_by(studysize, StudyID.x, RowID, Temp_sc, Per_sc, Fire_Int_Groups,
            Years_since_fire, Continent) %>%   # Groups the summary file by Plot number
   summarize(           # Coding for how we want our CWMs summarized
-    Height_cwm = weighted.mean(Plant_height_vegetative, cover),   # Actual calculation of CWMs
-    Mass_cwm = weighted.mean(Seed_dry_mass, cover),
-    Nitrogen_cwm = weighted.mean(Leaf_nitrogen, cover),
-    Area_cwm = weighted.mean(Leaf_area_PI, cover),
-    Long_cwm = weighted.mean(Seed_longevity, cover),
-    Disp_cwm = weighted.mean(Dispersal_unit_dry_mass, cover)
+    Height_cwm = weighted.mean(Plant_height_vegetative, cover, na.rm = TRUE),   # Actual calculation of CWMs
+    Mass_cwm = weighted.mean(Seed_dry_mass, cover, na.rm = TRUE),
+    Nitrogen_cwm = weighted.mean(Leaf_nitrogen, cover, na.rm = TRUE),
+    Area_cwm = weighted.mean(Leaf_area_PI, cover, na.rm = TRUE),
+    Long_cwm = weighted.mean(Seed_longevity, cover, na.rm = TRUE),
+    Disp_cwm = weighted.mean(Dispersal_unit_dry_mass, cover, na.rm = TRUE)
   )
 
 #Calculate community weighted means
 tree.cwm <-   # New dataframe where we can inspect the result
   Tree_df %>%   # First step in the next string of statements
-  group_by(RowID, Temp_sc, Per_sc, Fire_Int_Groups,
-           Years_since_fire, Continent) %>%   # Groups the summary file by Plot number
+  group_by(StudyID.x, RowID, Temp_sc, Per_sc, Fire_Int_Groups,
+           Years_since_fire, Continent, studysize) %>%   # Groups the summary file by Plot number
   summarize(           # Coding for how we want our CWMs summarized
-    Height_cwm = weighted.mean(Plant_height_vegetative, cover),   # Actual calculation of CWMs
-    Mass_cwm = weighted.mean(Seed_dry_mass, cover),
-    Nitrogen_cwm = weighted.mean(Leaf_nitrogen, cover),
-    Area_cwm = weighted.mean(Leaf_area_PI, cover),
-    Long_cwm = weighted.mean(Seed_longevity, cover),
-    Disp_cwm = weighted.mean(Dispersal_unit_dry_mass, cover)
+    Height_cwm = weighted.mean(Plant_height_vegetative, cover, na.rm = TRUE),   # Actual calculation of CWMs
+    Mass_cwm = weighted.mean(Seed_dry_mass, cover, na.rm = TRUE),
+    Nitrogen_cwm = weighted.mean(Leaf_nitrogen, cover, na.rm = TRUE),
+    Area_cwm = weighted.mean(Leaf_area_PI, cover, na.rm = TRUE),
+    Long_cwm = weighted.mean(Seed_longevity, cover, na.rm = TRUE),
+    Disp_cwm = weighted.mean(Dispersal_unit_dry_mass, cover, na.rm = TRUE)
   )
 
+#use only first 
 
 #Ground layer
-Seed_mass_mod <- lm(log(Mass_cwm) ~
-                            Years_since_fire*Continent +
-                            Years_since_fire * Fire_Int_Groups +
-                            Continent * Fire_Int_Groups +
-                            I(Temp_sc^2)+
-                      Temp_sc +
-                            Per_sc,
-                        data = ground.cwm)
+ggplot(ground.cwm, aes(x = Years_since_fire, y=Mass_cwm, by = Fire_Int_Groups))+
+  geom_point(aes(color = Fire_Int_Groups)) + 
+  geom_smooth(aes(color = Fire_Int_Groups))+
+  facet_wrap(~Continent)
 
-plot(Seed_mass_mod)
-shapiro.test(resid(Seed_mass_mod)) #QQ
+#Use only first 13 years after fire
+ground_sub_cwm <- ground.cwm %>%
+  filter(Years_since_fire >= 1, Years_since_fire <= 13)
 
-summary(Seed_mass_mod)
-Anova(Seed_mass_mod, type = 'III')
-
-#Plot predictions!
-pred_grid_sm <- expand.grid(
-  Years_since_fire = seq(
-    min(ground.cwm$Years_since_fire, na.rm = TRUE),
-    max(ground.cwm$Years_since_fire, na.rm = TRUE),
-    length.out = 88
-  ),
-  Fire_Int_Groups = levels(ground.cwm$Fire_Int_Groups),
-  Continent     = levels(ground.cwm$Continent)
-) %>%
-  mutate(
-    Temp_sc   = mean(ground.cwm$Temp_sc, na.rm = TRUE),
-    Per_sc = mean(ground.cwm$Per_sc, na.rm = TRUE)
-  )
-
-
-pred_sm <- predict(
-  Seed_mass_mod,
-  newdata = pred_grid_sm,
-  type = "response",      
-  se.fit = TRUE
+Seed_mass_mod <- gls(
+  log(Mass_cwm) ~
+    poly(Years_since_fire, 3) * Continent +
+    poly(Years_since_fire, 3) * Fire_Int_Groups +
+    I(Temp_sc^2) +
+    Temp_sc +
+    Per_sc,
+  
+  data = ground_sub_cwm,
+  
+  correlation = corCompSymm(form = ~ 1 | StudyID.x),
+  weights     = varFixed(~ 1 / log(studysize)),
+  method      = "REML"
 )
 
-pred_grid_sm$fit   <- pred_sm$fit
-pred_grid_sm$lower <- pred_sm$fit - 1.96 * pred_sm$se.fit
-pred_grid_sm$upper <- pred_sm$fit + 1.96 * pred_sm$se.fit
+plot(Seed_mass_mod, resid(., type = "normalized") ~ fitted(.))
+summary(Seed_mass_mod)
+Anova(Seed_mass_mod, type = 'II')
+
+
+#Plot predictions!
+emm_sm <- emmeans(
+  Seed_mass_mod,
+  ~ Years_since_fire | Fire_Int_Groups * Continent,
+  at = list(
+    Years_since_fire = seq(
+      min(ground_sub_cwm$Years_since_fire, na.rm = TRUE),
+      max(ground_sub_cwm$Years_since_fire, na.rm = TRUE),
+      length.out = 88
+    ),
+    Temp_sc = mean(ground_sub_cwm$Temp_sc, na.rm = TRUE),
+    Per_sc  = mean(ground_sub_cwm$Per_sc, na.rm = TRUE)
+  )
+)
+
+
+pred_grid_sm <- as.data.frame(emm_sm)
+
+pred_grid_sm <- pred_grid_sm %>%
+  mutate(
+    fit   = exp(emmean),
+    lower = exp(lower.CL),
+    upper = exp(upper.CL)
+  )
+
 
 
 pred_grid_sm$Fire_Int_Groups <- factor(
@@ -304,9 +326,9 @@ pred_grid_sm$Fire_Int_Groups <- factor(
 
 seedmassplot<- ggplot(pred_grid_sm,
                       aes(x = Years_since_fire,
-                          y = fit,
+                          y = emmean,
                           color = Fire_Int_Groups)) +
-    geom_ribbon(aes(ymin = lower, ymax = upper, fill = Fire_Int_Groups),
+    geom_ribbon(aes(ymin = lower.CL, ymax = upper.CL, fill = Fire_Int_Groups),
               alpha = 0.2, color = NA, show.legend = FALSE) +
   geom_line(linewidth = 1.2) +
   facet_wrap(~ Continent,
@@ -345,54 +367,56 @@ ggsave(plot = seedmassplot, filename = "Seedmass_ground.png", dpi =300,
 
 ##PLANT HEIGHT MODEL
 
-Plant_height_mod <- lm(log(Height_cwm) ~
-                         Years_since_fire*Continent +
-                         Years_since_fire * Fire_Int_Groups +
-                         Continent * Fire_Int_Groups +
-                        I(Temp_sc^2)+
-                         Temp_sc +
-                         Per_sc,
-                       data = ground.cwm)
+ggplot(ground.cwm, aes(x = Years_since_fire, y = log(Height_cwm), 
+                       by = Fire_Int_Groups))+
+  geom_point(aes(color= Fire_Int_Groups))+
+  geom_smooth(aes(color = Fire_Int_Groups))+
+  facet_wrap(~Continent)
 
-plot(Plant_height_mod)
-shapiro.test(resid(Plant_height_mod)) #QQ
-
-summary(Plant_height_mod)
-Anova(Plant_height_mod, type = 'III')
-
-#Plot predictions!
-pred_grid_ph <- expand.grid(
-  Years_since_fire = seq(
-    min(ground.cwm$Years_since_fire, na.rm = TRUE),
-    max(ground.cwm$Years_since_fire, na.rm = TRUE),
-    length.out = 88
-  ),
-  Fire_Int_Groups = levels(ground.cwm$Fire_Int_Groups),
-  Continent     = levels(ground.cwm$Continent)
-) %>%
-  mutate(
-    Temp_sc   = mean(ground.cwm$Temp_sc, na.rm = TRUE),
-    Per_sc = mean(ground.cwm$Per_sc, na.rm = TRUE)
-  )
-
-
-pred_ph <- predict(
-  Plant_height_mod,
-  newdata = pred_grid_ph,
-  type = "response",      
-  se.fit = TRUE
+Plant_height_mod <- gls(
+  log(Height_cwm) ~
+    poly(Years_since_fire, 4) * Continent +
+    poly(Years_since_fire, 4) * Fire_Int_Groups +
+    I(Temp_sc^2) +
+    Temp_sc +
+    Per_sc,
+  
+  data = ground.cwm,
+  
+  correlation = corCompSymm(form = ~ 1 | StudyID.x),
+  weights     = varFixed(~ 1 / log(studysize)),
+  method      = "REML"
 )
 
-eta <- pred_ph$fit
-se  <- pred_ph$se.fit
+plot(Plant_height_mod, resid(., type = "normalized") ~ fitted(.))
+summary(Plant_height_mod)
+Anova(Plant_height_mod, type = 'II')
 
-lower_eta <- eta - 1.96 * se
-upper_eta <- eta + 1.96 * se
 
-# back-transform from log scale
-pred_grid_ph$fit   <- exp(eta)
-pred_grid_ph$lower <- exp(lower_eta)
-pred_grid_ph$upper <- exp(upper_eta)
+#Plot predictions!
+emm_ph <- emmeans(
+  Plant_height_mod,
+  ~ Years_since_fire | Fire_Int_Groups * Continent,
+  at = list(
+    Years_since_fire = seq(
+      min(ground_sub_cwm$Years_since_fire, na.rm = TRUE),
+      max(ground_sub_cwm$Years_since_fire, na.rm = TRUE),
+      length.out = 88
+    ),
+    Temp_sc = mean(ground_sub_cwm$Temp_sc, na.rm = TRUE),
+    Per_sc  = mean(ground_sub_cwm$Per_sc, na.rm = TRUE)
+  )
+)
+
+
+pred_grid_ph <- as.data.frame(emm_ph)
+
+pred_grid_ph <- pred_grid_ph %>%
+  mutate(
+    fit   = exp(emmean),
+    lower = exp(lower.CL),
+    upper = exp(upper.CL)
+  )
 
 
 pred_grid_ph$Fire_Int_Groups <- factor(
