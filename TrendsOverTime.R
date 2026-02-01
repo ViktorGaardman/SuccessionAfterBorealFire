@@ -2,11 +2,8 @@
 library(tidyverse)
 library(car)
 library(ggeffects)
-library(DHARMa)
-library(glmmTMB)
 library(patchwork)
-library(lme4)
-library(performance)
+#library(performance)
 library(nlme)
 library(emmeans)
 
@@ -215,8 +212,6 @@ tree.cwm <-   # New dataframe where we can inspect the result
     Disp_cwm = weighted.mean(Dispersal_unit_dry_mass, cover, na.rm = TRUE)
   )
 
-#use only first 
-
 #Ground layer
 ggplot(ground.cwm, aes(x = Years_since_fire, y=Mass_cwm, by = Fire_Int_Groups))+
   geom_point(aes(color = Fire_Int_Groups)) + 
@@ -325,11 +320,11 @@ seedmassplot<- ggplot(pred_grid_sm,
   scale_x_continuous(limits = c(1,13), 
                      breaks = c(1, 3, 5, 7, 9, 11, 13)) +
   ggtitle("Seed dry mass")+
-  theme(legend.position="none",
+  theme(legend.position="right",
         legend.text=element_text(size=16),
         legend.title=element_text(size=18),
         legend.direction='vertical',
-        axis.title.x = element_text(size = 18),
+        axis.title.x = element_blank(),
         axis.title.y = element_text(size = 16),
         axis.text = element_text(size = 14),
         strip.text = element_text(size=16),
@@ -476,6 +471,7 @@ plot(Leaf_nitrogen_mod, resid(., type = "normalized") ~ fitted(.))
 
 summary(Leaf_nitrogen_mod)
 Anova(Leaf_nitrogen_mod, type = 'III')
+
 #Plot predictions!
 emm_ln <- emmeans(
   Leaf_nitrogen_mod,
@@ -525,7 +521,7 @@ leafnitrogenplot<- ggplot(pred_grid_ln,
   ggtitle("Leaf nitrogen")+
   scale_x_continuous(limits = c(1,13), 
                      breaks = c(1, 3, 5, 7, 9, 11, 13)) +
-  theme(legend.position="right",
+  theme(legend.position="none",
         legend.text=element_text(size=16),
         legend.title=element_text(size=18),
         legend.direction='vertical',
@@ -631,7 +627,7 @@ leafareaplot<- ggplot(pred_grid_la,
         legend.text=element_text(size=16),
         legend.title=element_text(size=18),
         legend.direction='vertical',
-        axis.title.x = element_text(size=18),
+        axis.title.x = element_blank(),
         axis.title.y = element_text(size=18),
         axis.text = element_text(size = 14),
         strip.text = element_text(size=16),
@@ -651,22 +647,9 @@ longevity_df <- ground_sub_cwm %>%
 
 Longevity_mod <- gls(
   log(Long_cwm) ~
-    poly(Years_since_fire, 3) * Fire_Int_Groups *
-    Continent +
-    poly(Temp_sc, 3) +
-    Per_sc,
-  data = longevity_df,
-  correlation = corCompSymm(form = ~ 1 | StudyID.x),
-  weights     = varPower(form = ~ studysize),
-  method      = "REML"
-)
-
-Longevity_mod2 <- gls(
-  log(Long_cwm) ~
-    poly(Years_since_fire, 3) * Fire_Int_Groups +
-    Continent +
-    poly(Temp_sc, 3) +
-    Per_sc,
+    Years_since_fire +
+    Continent * Fire_Int_Groups +
+    Temp_sc,
   data = longevity_df,
   correlation = corCompSymm(form = ~ 1 | StudyID.x),
   weights     = varPower(form = ~ studysize),
@@ -679,7 +662,7 @@ AIC_vals
 
 mod_fixed <- update(Longevity_mod, weights = varFixed(~ 1 / log(studysize)), method = "ML")
 mod_power <- update(Longevity_mod, weights = varPower(form = ~ studysize), method = "ML")
-mod_exp   <- update(Longevity_mod, weights = varPower(form = ~ log(studysize)), method = "ML")
+mod_exp   <- update(Longevity_mod, weights = varExp(form = ~ log(studysize)), method = "ML")
 AIC(mod_fixed, mod_power, mod_exp)
 
 qqnorm(resid(Longevity_mod, type = "normalized"))
@@ -690,37 +673,37 @@ Anova(Longevity_mod, type = 'III')
 
 
 #Plot predictions!
-emm_la <- emmeans(
-  Leaf_area_mod,
+emm_lo <- emmeans(
+  Longevity_mod,
   ~ Years_since_fire | Fire_Int_Groups * Continent,
   at = list(
     Years_since_fire = seq(
-      min(ground_sub_cwm$Years_since_fire, na.rm = TRUE),
-      max(ground_sub_cwm$Years_since_fire, na.rm = TRUE),
+      min(longevity_df$Years_since_fire, na.rm = TRUE),
+      max(longevity_df$Years_since_fire, na.rm = TRUE),
       length.out = 30
     ),
-    Temp_sc = mean(ground_sub_cwm$Temp_sc, na.rm = TRUE),
-    Per_sc  = mean(ground_sub_cwm$Per_sc, na.rm = TRUE)
+    Temp_sc = mean(longevity_df$Temp_sc, na.rm = TRUE),
+    Per_sc  = mean(longevity_df$Per_sc, na.rm = TRUE)
   ),
   weights = 'proportional'
 )
 
 
-pred_grid_la <- as.data.frame(emm_la)
+pred_grid_lo <- as.data.frame(emm_lo)
 
-pred_grid_la <- pred_grid_la %>%
+pred_grid_lo <- pred_grid_lo %>%
   mutate(
     fit   = exp(emmean),
     lower = exp(lower.CL),
     upper = exp(upper.CL)
   )
 
-pred_grid_la$Fire_Int_Groups <- factor(
-  pred_grid_la$Fire_Int_Groups,
+pred_grid_lo$Fire_Int_Groups <- factor(
+  pred_grid_lo$Fire_Int_Groups,
   levels = c("High", "Medium", "Low")
 )
 
-leafareaplot<- ggplot(pred_grid_la,
+longevityplot<- ggplot(pred_grid_lo,
                       aes(x = Years_since_fire,
                           y = fit,
                           color = Fire_Int_Groups)) +
@@ -728,6 +711,7 @@ leafareaplot<- ggplot(pred_grid_la,
               alpha = 0.2, color = NA, show.legend = FALSE) +
   geom_line(linewidth = 1.2) +
   facet_wrap(~ Continent,
+             scale = "free_y",
              labeller = labeller(
                Continent = c(
                  "Eurasia" = "Eurasia",
@@ -736,13 +720,13 @@ leafareaplot<- ggplot(pred_grid_la,
   scale_fill_manual(values = c("firebrick", "goldenrod", "cornflowerblue")) + 
   labs(
     x = "Time since fire (years)",
-    y = expression(mm^2/mg),
-    color = "Fire intensity"
+    y = "Years",
+    color = "Longevity"
   ) +
   theme_bw() +
   scale_x_continuous(limits = c(1,13), 
                      breaks = c(1, 3, 5, 7, 9, 11, 13))+
-  ggtitle("SLA") +
+  ggtitle("Seed longevity") +
   theme(legend.position="none",
         legend.text=element_text(size=16),
         legend.title=element_text(size=18),
@@ -755,26 +739,134 @@ leafareaplot<- ggplot(pred_grid_la,
         panel.grid.major = element_blank(),
         plot.title = element_text(size = 18, hjust = 0.5)) 
 
-leafareaplot
+longevityplot
 
-ggsave(plot = leafareaplot, filename = "Leafarea_ground.png", dpi =300,
+ggsave(plot = longevityplot, filename = "Longevity_ground.png", dpi =300,
+       height = 4.2, width = 6.5)
+
+
+#Dispersal unit mass
+
+disp_df <- ground_sub_cwm %>%
+  filter(!(is.na(Disp_cwm)))
+
+Dispersal_mod <- gls(
+  log(Disp_cwm) ~
+    Years_since_fire +
+    Fire_Int_Groups * Continent +
+    Temp_sc,
+  data = disp_df,
+  correlation = corCompSymm(form = ~ 1 | StudyID.x),
+  weights     = varPower(form = ~ log(studysize)),
+  method      = "REML"
+)
+
+AIC_vals <- AIC(Dispersal_mod, Dispersal_mod2)
+AIC_vals$delta <- AIC_vals$AIC - min(AIC_vals$AIC)
+AIC_vals
+
+mod_fixed <- update(Dispersal_mod, weights = varFixed(~ 1 / log(studysize)), method = "ML")
+mod_power <- update(Dispersal_mod, weights = varPower(form = ~ log(studysize)), method = "ML")
+mod_exp   <- update(Dispersal_mod, weights = varExp(form = ~ log(studysize)), method = "ML")
+AIC(mod_fixed, mod_power, mod_exp)
+
+qqnorm(resid(Dispersal_mod, type = "normalized"))
+qqline(resid(Dispersal_mod, type = "normalized"))
+plot(Dispersal_mod, resid(., type = "normalized") ~ fitted(.))
+summary(Dispersal_mod)
+Anova(Dispersal_mod, type = 'III')
+
+
+#Plot predictions!
+emm_di <- emmeans(
+  Dispersal_mod,
+  ~ Years_since_fire | Fire_Int_Groups * Continent,
+  at = list(
+    Years_since_fire = seq(
+      min(disp_df$Years_since_fire, na.rm = TRUE),
+      max(disp_df$Years_since_fire, na.rm = TRUE),
+      length.out = 30
+    ),
+    Temp_sc = mean(disp_df$Temp_sc, na.rm = TRUE)
+  ),
+  weights = 'proportional'
+)
+
+
+pred_grid_di <- as.data.frame(emm_di)
+
+pred_grid_di <- pred_grid_di %>%
+  mutate(
+    fit   = exp(emmean),
+    lower = exp(lower.CL),
+    upper = exp(upper.CL)
+  )
+
+pred_grid_di$Fire_Int_Groups <- factor(
+  pred_grid_di$Fire_Int_Groups,
+  levels = c("High", "Medium", "Low")
+)
+
+dispplot<- ggplot(pred_grid_di,
+                       aes(x = Years_since_fire,
+                           y = fit,
+                           color = Fire_Int_Groups)) +
+  geom_ribbon(aes(ymin = lower, ymax = upper, fill = Fire_Int_Groups),
+              alpha = 0.2, color = NA, show.legend = FALSE) +
+  geom_line(linewidth = 1.2) +
+  facet_wrap(~ Continent,
+             scale = "free_y",
+             labeller = labeller(
+               Continent = c(
+                 "Eurasia" = "Eurasia",
+                 "North_America" = "North America"))) +
+  scale_color_manual(values = c("firebrick", "goldenrod", "cornflowerblue")) + 
+  scale_fill_manual(values = c("firebrick", "goldenrod", "cornflowerblue")) + 
+  labs(
+    x = "Time since fire (years)",
+    y = "mg",
+    color = "Longevity"
+  ) +
+  theme_bw() +
+  scale_x_continuous(limits = c(1,13), 
+                     breaks = c(1, 3, 5, 7, 9, 11, 13))+
+  ggtitle("Dispersal unit dry mass") +
+  theme(legend.position="none",
+        legend.text=element_text(size=16),
+        legend.title=element_text(size=18),
+        legend.direction='vertical',
+        axis.title.x = element_text(size=18),
+        axis.title.y = element_text(size=18),
+        axis.text = element_text(size = 14),
+        strip.text = element_text(size=16),
+        panel.grid.minor = element_blank(), 
+        panel.grid.major = element_blank(),
+        plot.title = element_text(size = 18, hjust = 0.5)) 
+
+dispplot
+
+ggsave(plot = dispplot, filename = "Disp_ground.png", dpi =300,
        height = 4.2, width = 6.5)
 
 
 ###########
-combinedtraitplot_ground <- (plantheightplot|leafnitrogenplot)/(leafareaplot|seedmassplot)
+combinedtraitplot_ground <- (plantheightplot|leafnitrogenplot)/
+  (leafareaplot|seedmassplot)/
+  (longevityplot|dispplot)
 
 combinedtraitplot_ground
 
 ggsave(plot = combinedtraitplot_ground, filename = "traitplots_ground.png",
-       dpi = 300, height = 7.39, width = 13)
-
-
+       dpi = 300, height = 10.56, width = 13)
 
 
 
 ##################
 #Tree layer
+
+tree.cwm <- tree.cwm %>%
+  filter(!(is.na(Long_cwm)))
+
 Seed_mass_mod_T <- lm(log(Mass_cwm) ~
                       Years_since_fire*Continent +
                       Years_since_fire * Fire_Int_Groups +
