@@ -2,6 +2,7 @@
 library(tidyverse)
 #library(car)
 library(ggeffects)
+library(glmmTMB)
 library(DHARMa)
 library(patchwork)
 library(mgcv)
@@ -120,25 +121,50 @@ df_long_sub <- df_long %>%
 herbs_df <- df_long_sub %>%
   filter(PlantGroup == "herb")
 
-#Filter out all species that appear less than three times
+#Filter out all species that appear less than five times
 herbs_df <- herbs_df %>%
-  group_by(species, Fire_Int_Groups) %>%
+  group_by(species, Continent, Fire_Int_Groups) %>%
   filter(n() >= 5) %>%
   ungroup()
 
 herbs_EU <- herbs_df %>%
   filter(Continent == "Eurasia")
 
-mod_gam <- gam(
+herbs_EU$species <- as.factor(herbs_EU$species)
+
+species <- herbs_EU %>%
+  filter(Fire_Int_Groups == "High")
+
+mod <- glmmTMB(
+  coverstd ~ Years_since_fire * species +
+    Temp_sc + Per_sc +
+    (1 | StudyID.x),
+  dispformula = ~ Years_since_fire,
+  weights = log(studysize),
+  family = beta_family(),
+  data = subset(herbs_EU, Fire_Int_Groups == "Low")
+)
+
+sim_res <- simulateResiduals(fittedModel = mod, n = 500)
+plot(sim_res)
+testDispersion(sim_res)
+testQuantiles(sim_res)
+plotResiduals(sim_res, subset(herbs_EU, Fire_Int_Groups == "High")$Years_since_fire)
+
+
+mod <- gam(
   coverstd ~ 
     species +
-    s(Years_since_fire, by = species) +
-    s(Temp_sc) +
-    s(StudyID.x, bs = "re"),   # random effect
+    s(Years_since_fire, species, bs = "fs", k = 5) +
+    Temp_sc,
+#    s(StudyID.x, bs = "re"),   # random effect
   family = betar(link = "logit"),
-  data = subset(herbs_EU, Fire_Int_Groups = "high"),
+  weights = log(studysize),
+  data = subset(herbs_EU, Fire_Int_Groups == "High"),
   method = "REML"
 )
+
+summary(mod)
 
 prediction_plot <- function(herbs_df, continent_level, fire_level) {
   
@@ -152,16 +178,27 @@ prediction_plot <- function(herbs_df, continent_level, fire_level) {
   mod <- gam(
     coverstd ~ 
       species +
-      s(Years_since_fire, by = species) +
-      s(Temp_sc) +
-      s(Per_sc) +
-      s(StudyID.x, bs = "re"),   # random effect
+      s(Years_since_fire, species, bs = "fs", k = 5) +
+      Temp_sc,
+#      s(StudyID.x, bs = "re"),   # random effect
     family = betar(link = "logit"),
     weights = log(studysize),
     data = df_sub,
     method = "REML"
   )
   
+#  pred_grid <- do.call(rbind, lapply(levels(df_sub$species), function(sp) {
+ #   df_sp <- df_sub[df_sub$species == sp, ]
+#    data.frame(
+#      Years_since_fire = seq(min(df_sp$Years_since_fire), max(df_sp$Years_since_fire), length.out = 40),
+#      species = sp,
+#      Per_sc = mean(df_sp$Per_sc, na.rm = TRUE),
+#      Temp_sc = mean(df_sp$Temp_sc, na.rm = TRUE),
+#      StudyID.x = NA
+#      studysize <- median(df_sub$studysize, na.rm = TRUE)
+#    )
+#  }))
+ 
   # Prediction grid
   pred_grid <- expand.grid(
     Years_since_fire = seq(
@@ -170,27 +207,22 @@ prediction_plot <- function(herbs_df, continent_level, fire_level) {
       length.out = 40
     ),
     species = levels(df_sub$species),
-    Per_sc = mean(df_sub$Per_sc, na.rm = TRUE),
-    Temp_sc = mean(df_sub$Temp_sc, na.rm = TRUE)
+    Temp_sc = mean(df_sub$Temp_sc, na.rm = TRUE),
+    studysize <- median(df_sub$studysize, na.rm = TRUE)
   )
-  
-  pred_grid$studysize <- median(df_sub$studysize, na.rm = TRUE)
-  
+   
   # Predictions
   pred <- predict(
     mod,
     newdata = pred_grid,
-    type = "link",
-    se.fit = TRUE,
-    re.form = NA
+    type = "response",
+    se.fit = TRUE
+#    exclude = "s(StudyID.x)"  # ignore random effect
   )
   
-  eta <- pred$fit
-  se  <- pred$se.fit
-  
-  pred_grid$fit   <- plogis(eta)
-  pred_grid$lower <- plogis(eta - 1.96 * se)
-  pred_grid$upper <- plogis(eta + 1.96 * se)
+  pred_grid$fit   <- pred$fit
+  pred_grid$lower <- pmax(pred$fit - 1.96*pred$se.fit, 1e-6)
+  pred_grid$upper <- pmin(pred$fit + 1.96*pred$se.fit, 1 - 1e-6)
   
   # Plot
   p <- ggplot(pred_grid,
