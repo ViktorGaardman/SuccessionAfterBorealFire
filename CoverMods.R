@@ -56,10 +56,9 @@ species_long <- species_long %>%
 #Drop zeros
 species_long <- subset(species_long, !species == 0)
 
-
 #Add metadata
 species_long_meta <- species_long %>%
-  left_join(metadata, by = "RowID")
+  left_join(metadata, by = c("RowID", "StudyID"))
 
 
 #Step 3. Load climate data
@@ -76,14 +75,11 @@ species_long_Temp <- species_long_meta %>%
 species_long_Perc <- species_long_Temp %>%
   left_join(Perc_Data, by = "Title")
 
-
-df_long <- subset(species_long_Perc, !species == 0)
-
-df_long <- df_long %>% 
-  mutate(across(c("Fire_Int_Groups", "Continent", "StudyID.x"), as.factor))
+species_long_Perc <- species_long_Perc %>% 
+  mutate(across(c("Fire_Int_Groups", "Continent", "StudyID"), as.factor))
 
 #Create a plantgroup column 
-df_long <- df_long %>%
+df_long <- species_long_Perc %>%
   mutate(
     PlantGroup = str_extract(base, "(?<=_)[^_]+(?=_)")
   )
@@ -99,10 +95,6 @@ df_long <- df_long %>%
     studysize = Plot_size * Sample_size
   )
 
-df_long$Temp_sc <- as.numeric(scale(df_long$Avg_Temp, center = TRUE, scale = TRUE))
-df_long$Per_sc <- as.numeric(scale(df_long$AvgPer, center = TRUE, scale = TRUE))
-
-
 #
 #Divide by 100 to get a 0-1 range but
 #avoid 0 and 1 one in the dataset (beta must be >0 and <1)
@@ -111,81 +103,113 @@ df_long$coverstd <- (df_long$cover + 0.01) / 101
 
 df_long$base <- as.factor(df_long$base)
 
+#Figure 1
+#Per study
+StudyPlot <- ggplot(df_long, aes(x = Years_since_fire)) +
+  geom_histogram(co = ) +
+  facet_wrap(~Continent)
+StudyPlot
+
+
 #Use only first 10 years after fire
 df_long_sub <- df_long %>%
   filter(Years_since_fire >= 1, Years_since_fire <= 10)
+
+df_long_sub$species <- as.factor(df_long_sub$species)
 
 ###################################################
 #Dominant species per plant group plots. Herbs
 
 herbs_df <- df_long_sub %>%
-  filter(PlantGroup == "herb")
+  filter(PlantGroup == "herb") %>%
+  droplevels()
 
-#Filter out all species that appear less than five times
-herbs_df <- herbs_df %>%
+#Filter out all species that appear less than five times, in less than five timesteps,
+#and less than two studies
+herbs_filtered <- herbs_df %>%
   group_by(species, Continent, Fire_Int_Groups) %>%
-  filter(n() >= 5) %>%
-  ungroup()
+  filter(n() >= 5, 
+n_distinct(Years_since_fire) >= 5,
+  n_distinct(StudyID) >=2)%>%
+  ungroup() %>%
+  droplevels()
 
-herbs_EU <- herbs_df %>%
+herbs_EU <- herbs_filtered %>%
   filter(Continent == "Eurasia")
 
-herbs_EU$species <- as.factor(herbs_EU$species)
-
 species <- herbs_EU %>%
-  filter(Fire_Int_Groups == "High")
+  filter(Fire_Int_Groups == "Low")
+
+ggplot(species, aes(x = Years_since_fire)) +
+         geom_histogram(aes(fill = species))
 
 mod <- glmmTMB(
   coverstd ~ Years_since_fire * species +
-    Temp_sc + Per_sc +
+    Temp_sc+
     (1 | StudyID.x),
   dispformula = ~ Years_since_fire,
   weights = log(studysize),
   family = beta_family(),
-  data = subset(herbs_EU, Fire_Int_Groups == "Low")
+  data = species
 )
 
 sim_res <- simulateResiduals(fittedModel = mod, n = 500)
 plot(sim_res)
 testDispersion(sim_res)
 testQuantiles(sim_res)
-plotResiduals(sim_res, subset(herbs_EU, Fire_Int_Groups == "High")$Years_since_fire)
+plotResiduals(sim_res, species$Years_since_fire)
 
 
 mod <- gam(
   coverstd ~ 
     species +
     s(Years_since_fire, species, bs = "fs", k = 5) +
-    Temp_sc,
-#    s(StudyID.x, bs = "re"),   # random effect
+    Temp_sc+
+    s(StudyID, bs = "re"),   # random effect
   family = betar(link = "logit"),
-  weights = log(studysize),
-  data = subset(herbs_EU, Fire_Int_Groups == "High"),
+  data = species,
   method = "REML"
 )
 
+gam.check(mod)
 summary(mod)
 
-prediction_plot <- function(herbs_df, continent_level, fire_level) {
+prediction_plot <- function(herbs_filtered, continent_level, fire_level) {
   
   # Filter data
-  df_sub <- herbs_df %>%
+  df_sub <- herbs_filtered %>%
     filter(Continent == continent_level,
            Fire_Int_Groups == fire_level) %>%
-    mutate(species = as.factor(species))
+    mutate(species = as.factor(species)) %>%
+    droplevels()
   
-  # Fit model
-  mod <- gam(
-    coverstd ~ 
-      species +
-      s(Years_since_fire, species, bs = "fs", k = 5) +
-      Temp_sc,
-#      s(StudyID.x, bs = "re"),   # random effect
-    family = betar(link = "logit"),
-    weights = log(studysize),
-    data = df_sub,
-    method = "REML"
-  )
+  # Number of species
+  n_sp <- nlevels(df_sub$species)
+  
+  # Fit model depending on number of species
+  if (n_sp > 1) {
+    mod <- gam(
+      coverstd ~ 
+        species +
+        s(Years_since_fire, species, bs = "fs", k = 5) +
+        Temp_sc +
+        s(StudyID, bs = "re"),
+      family = betar(link = "logit"),
+      data = df_sub,
+      method = "REML"
+    )
+  } else {
+    # Single-species model
+    mod <- gam(
+      coverstd ~ 
+        s(Years_since_fire, k = 5) +   # no species interaction
+        Temp_sc +
+        s(StudyID, bs = "re"),
+      family = betar(link = "logit"),
+      data = df_sub,
+      method = "REML"
+    )
+  }
   
 #  pred_grid <- do.call(rbind, lapply(levels(df_sub$species), function(sp) {
  #   df_sp <- df_sub[df_sub$species == sp, ]
@@ -208,28 +232,31 @@ prediction_plot <- function(herbs_df, continent_level, fire_level) {
     ),
     species = levels(df_sub$species),
     Temp_sc = mean(df_sub$Temp_sc, na.rm = TRUE),
-    studysize <- median(df_sub$studysize, na.rm = TRUE)
+    StudyID = levels(df_sub$StudyID)[1]
   )
    
   # Predictions
   pred <- predict(
     mod,
     newdata = pred_grid,
-    type = "response",
-    se.fit = TRUE
-#    exclude = "s(StudyID.x)"  # ignore random effect
+    type = "link",
+    se.fit = TRUE,
+    exclude = "s(StudyID)"  # ignore random effect
   )
   
-  pred_grid$fit   <- pred$fit
-  pred_grid$lower <- pmax(pred$fit - 1.96*pred$se.fit, 1e-6)
-  pred_grid$upper <- pmin(pred$fit + 1.96*pred$se.fit, 1 - 1e-6)
+  pred_grid$fit <- mod$family$linkinv(pred$fit)
+  pred_grid$upper <- mod$family$linkinv(pred$fit + 1.96 * pred$se.fit)
+  pred_grid$lower <- mod$family$linkinv(pred$fit - 1.96 * pred$se.fit)
+
   
   # Plot
   p <- ggplot(pred_grid,
               aes(x = Years_since_fire,
                   y = fit,
                   color = species)) +
-    geom_line(linewidth = 1.2, aes(color = species)) +
+    geom_ribbon(aes(ymin = lower, ymax = upper, fill = species),
+                alpha = 0.2, color = NA, show.legend = FALSE) +
+    geom_line(linewidth = 1.4, aes(color = species)) +
     labs(
       x = "Years since fire",
       y = "Predicted cover",
@@ -237,6 +264,15 @@ prediction_plot <- function(herbs_df, continent_level, fire_level) {
       title = paste("Herbs", continent_level, fire_level, "intensity")
     ) +
     theme_bw() +
+    scale_x_continuous(limits= c(1, 10), n.breaks = 6) +
+    scale_color_manual(values = c(
+      "#E69F00", "#56B4E9", "#009E73", "#F0E442",
+      "#0072B2", "#D55E00", "#CC79A7", "#000000"
+    ))+
+    scale_fill_manual(values = c(
+      "#E69F00", "#56B4E9", "#009E73", "#F0E442",
+      "#0072B2", "#D55E00", "#CC79A7", "#000000"
+    ))+
     theme(
       legend.position = "right",
       legend.text = element_text(size = 14),
@@ -253,12 +289,12 @@ prediction_plot <- function(herbs_df, continent_level, fire_level) {
   return(p)
 }
 
-herbsEUhigh_plot <- prediction_plot(herbs_df, "Eurasia", "High")
-herbsEUmed_plot  <- prediction_plot(herbs_df, "Eurasia", "Medium")
-herbsEUlow_plot  <- prediction_plot(herbs_df, "Eurasia", "Low")
-herbsNAhigh_plot  <- prediction_plot(herbs_df, "North_America", "High")
-herbsNAmed_plot  <- prediction_plot(herbs_df, "North_America", "Medium")
-herbsNAlow_plot  <- prediction_plot(herbs_df, "North_America", "Low")
+herbsEUhigh_plot <- prediction_plot(herbs_filtered, "Eurasia", "High")
+herbsEUmed_plot  <- prediction_plot(herbs_filtered, "Eurasia", "Medium")
+herbsEUlow_plot  <- prediction_plot(herbs_filtered, "Eurasia", "Low")
+herbsNAhigh_plot  <- prediction_plot(herbs_filtered, "North_America", "High")
+herbsNAmed_plot  <- prediction_plot(herbs_filtered, "North_America", "Medium")
+herbsNAlow_plot  <- prediction_plot(herbs_filtered, "North_America", "Low")
 
 EUherbplots <- herbsEUhigh_plot / herbsEUmed_plot / herbsEUlow_plot
 EUherbplots
@@ -272,32 +308,46 @@ dwarf_df <- df_long_sub %>%
   filter(PlantGroup == "dwarfshrub")
 
 #Filter out all species that appear less than three times
-dwarf_df <- dwarf_df %>%
-  group_by(species, Fire_Int_Groups) %>%
-  filter(n() >= 5) %>%
-  ungroup()
+dwarf_filtered <- dwarf_df %>%
+  group_by(species, Continent, Fire_Int_Groups) %>%
+  filter(n() >= 5, 
+         n_distinct(Years_since_fire) >= 5,
+         n_distinct(StudyID) >=2)%>%
+  ungroup() %>%
+  droplevels()
 
-dwarf_df_EU <- dwarf_df %>%
-  filter(Continent == "Eurasia")
-
-prediction_plot <- function(dwarf_df, continent_level, fire_level) {
+prediction_plot <- function(dwarf_filtered, continent_level, fire_level) {
   
   # Filter data
-  df_sub <- dwarf_df %>%
+  df_sub <- dwarf_filtered %>%
     filter(Continent == continent_level,
            Fire_Int_Groups == fire_level) %>%
-    mutate(species = as.factor(species))
+    mutate(species = as.factor(species)) %>%
+    droplevels()
   
   # Fit model
-  mod <- glmmTMB(
-    coverstd ~ Years_since_fire * species +
-      Temp_sc + Per_sc +
-      (1 | StudyID.x),
-    dispformula = ~ Years_since_fire,
-    weights = log(studysize),
-    family = beta_family(),
-    data = df_sub
+  mod <- gam(
+    coverstd ~ 
+      species +
+      s(Years_since_fire, species, bs = "fs", k = 5) +
+      Temp_sc+
+      s(StudyID, bs = "re"),   # random effect
+    family = betar(link = "logit"),
+    data = df_sub,
+    method = "REML"
   )
+  
+  #  pred_grid <- do.call(rbind, lapply(levels(df_sub$species), function(sp) {
+  #   df_sp <- df_sub[df_sub$species == sp, ]
+  #    data.frame(
+  #      Years_since_fire = seq(min(df_sp$Years_since_fire), max(df_sp$Years_since_fire), length.out = 40),
+  #      species = sp,
+  #      Per_sc = mean(df_sp$Per_sc, na.rm = TRUE),
+  #      Temp_sc = mean(df_sp$Temp_sc, na.rm = TRUE),
+  #      StudyID.x = NA
+  #      studysize <- median(df_sub$studysize, na.rm = TRUE)
+  #    )
+  #  }))
   
   # Prediction grid
   pred_grid <- expand.grid(
@@ -307,8 +357,8 @@ prediction_plot <- function(dwarf_df, continent_level, fire_level) {
       length.out = 40
     ),
     species = levels(df_sub$species),
-    Per_sc = mean(df_sub$Per_sc, na.rm = TRUE),
-    Temp_sc = mean(df_sub$Temp_sc, na.rm = TRUE)
+    Temp_sc = mean(df_sub$Temp_sc, na.rm = TRUE),
+    StudyID = levels(df_sub$StudyID)[1]
   )
   
   # Predictions
@@ -317,25 +367,38 @@ prediction_plot <- function(dwarf_df, continent_level, fire_level) {
     newdata = pred_grid,
     type = "link",
     se.fit = TRUE,
-    re.form = NA
+    exclude = "s(StudyID)"  # ignore random effect
   )
   
-  eta <- pred$fit
-  pred_grid$fit   <- plogis(eta)
+  pred_grid$fit <- mod$family$linkinv(pred$fit)
+  pred_grid$upper <- mod$family$linkinv(pred$fit + 1.96 * pred$se.fit)
+  pred_grid$lower <- mod$family$linkinv(pred$fit - 1.96 * pred$se.fit)
+  
   
   # Plot
   p <- ggplot(pred_grid,
               aes(x = Years_since_fire,
                   y = fit,
                   color = species)) +
+    geom_ribbon(aes(ymin = lower, ymax = upper, fill = species),
+                alpha = 0.2, color = NA, show.legend = FALSE) +
     geom_line(linewidth = 1.2, aes(color = species)) +
     labs(
       x = "Years since fire",
       y = "Predicted cover",
       color = "Species",
-      title = paste("Dwarfshrubs", continent_level, fire_level, "intensity")
+      title = paste("Dwarfshrub", continent_level, fire_level, "intensity")
     ) +
     theme_bw() +
+    scale_x_continuous(limits= c(1, 10), n.breaks = 6) +
+    scale_color_manual(values = c(
+      "#E69F00", "#56B4E9", "#009E73", "#F0E442",
+      "#0072B2", "#D55E00", "#CC79A7", "#000000"
+    ))+
+    scale_fill_manual(values = c(
+      "#E69F00", "#56B4E9", "#009E73", "#F0E442",
+      "#0072B2", "#D55E00", "#CC79A7", "#000000"
+    ))+
     theme(
       legend.position = "right",
       legend.text = element_text(size = 14),
@@ -352,12 +415,12 @@ prediction_plot <- function(dwarf_df, continent_level, fire_level) {
   return(p)
 }
 
-dwarfEUhigh_plot <- prediction_plot(dwarf_df, "Eurasia", "High")
-dwarfEUmed_plot  <- prediction_plot(dwarf_df, "Eurasia", "Medium")
-dwarfEUlow_plot  <- prediction_plot(dwarf_df, "Eurasia", "Low")
-dwarfNAhigh_plot  <- prediction_plot(dwarf_df, "North_America", "High")
-dwarfNAmed_plot  <- prediction_plot(dwarf_df, "North_America", "Medium")
-dwarfNAlow_plot  <- prediction_plot(dwarf_df, "North_America", "Low")
+dwarfEUhigh_plot <- prediction_plot(dwarf_filtered, "Eurasia", "High")
+dwarfEUmed_plot  <- prediction_plot(dwarf_filtered, "Eurasia", "Medium")
+dwarfEUlow_plot  <- prediction_plot(dwarf_filtered, "Eurasia", "Low")
+dwarfNAhigh_plot  <- prediction_plot(dwarf_filtered, "North_America", "High")
+dwarfNAmed_plot  <- prediction_plot(dwarf_filtered, "North_America", "Medium")
+dwarfNAlow_plot  <- prediction_plot(dwarf_filtered, "North_America", "Low")
 
 EUdwarfplots <- dwarfEUhigh_plot / dwarfEUmed_plot / dwarfEUlow_plot
 EUdwarfplots
@@ -372,29 +435,62 @@ grass_df <- df_long_sub %>%
   filter(PlantGroup == "graminoid")
 
 #Filter out all species that appear less than three times
-grass_df <- grass_df %>%
-  group_by(species, Fire_Int_Groups) %>%
-  filter(n() >= 5) %>%
-  ungroup()
+grass_filtered <- grass_df %>%
+  group_by(species, Continent, Fire_Int_Groups) %>%
+  filter(n() >= 5, 
+         n_distinct(Years_since_fire) >= 5,
+         n_distinct(StudyID) >=2)%>%
+  ungroup() %>%
+  droplevels()
 
-prediction_plot <- function(grass_df, continent_level, fire_level) {
+prediction_plot <- function(grass_filtered, continent_level, fire_level) {
   
   # Filter data
-  df_sub <- grass_df %>%
+  df_sub <- grass_filtered %>%
     filter(Continent == continent_level,
            Fire_Int_Groups == fire_level) %>%
-    mutate(species = as.factor(species))
+    mutate(species = as.factor(species)) %>%
+    droplevels()
   
-  # Fit model
-  mod <- glmmTMB(
-    coverstd ~ Years_since_fire * species +
-      Temp_sc + Per_sc +
-      (1 | StudyID.x),
-    dispformula = ~ Years_since_fire,
-    weights = log(studysize),
-    family = beta_family(),
-    data = df_sub
-  )
+  # Number of species
+  n_sp <- nlevels(df_sub$species)
+  
+  # Fit model depending on number of species
+  if (n_sp > 1) {
+    mod <- gam(
+      coverstd ~ 
+        species +
+        s(Years_since_fire, species, bs = "fs", k = 5) +
+        Temp_sc +
+        s(StudyID, bs = "re"),
+      family = betar(link = "logit"),
+      data = df_sub,
+      method = "REML"
+    )
+  } else {
+    # Single-species model
+    mod <- gam(
+      coverstd ~ 
+        s(Years_since_fire, k = 5) +   # no species interaction
+        Temp_sc +
+        s(StudyID, bs = "re"),
+      family = betar(link = "logit"),
+      data = df_sub,
+      method = "REML"
+    )
+  }
+  
+  #  pred_grid <- do.call(rbind, lapply(levels(df_sub$species), function(sp) {
+  #   df_sp <- df_sub[df_sub$species == sp, ]
+  #    data.frame(
+  #      Years_since_fire = seq(min(df_sp$Years_since_fire), max(df_sp$Years_since_fire), length.out = 40),
+  #      species = sp,
+  #      Per_sc = mean(df_sp$Per_sc, na.rm = TRUE),
+  #      Temp_sc = mean(df_sp$Temp_sc, na.rm = TRUE),
+  #      StudyID.x = NA
+  #      studysize <- median(df_sub$studysize, na.rm = TRUE)
+  #    )
+  #  }))
   
   # Prediction grid
   pred_grid <- expand.grid(
@@ -404,8 +500,8 @@ prediction_plot <- function(grass_df, continent_level, fire_level) {
       length.out = 40
     ),
     species = levels(df_sub$species),
-    Per_sc = mean(df_sub$Per_sc, na.rm = TRUE),
-    Temp_sc = mean(df_sub$Temp_sc, na.rm = TRUE)
+    Temp_sc = mean(df_sub$Temp_sc, na.rm = TRUE),
+    StudyID = levels(df_sub$StudyID)[1]
   )
   
   # Predictions
@@ -414,25 +510,38 @@ prediction_plot <- function(grass_df, continent_level, fire_level) {
     newdata = pred_grid,
     type = "link",
     se.fit = TRUE,
-    re.form = NA
+    exclude = "s(StudyID)"  # ignore random effect
   )
   
-  eta <- pred$fit
-  pred_grid$fit   <- plogis(eta)
+  pred_grid$fit <- mod$family$linkinv(pred$fit)
+  pred_grid$upper <- mod$family$linkinv(pred$fit + 1.96 * pred$se.fit)
+  pred_grid$lower <- mod$family$linkinv(pred$fit - 1.96 * pred$se.fit)
+  
   
   # Plot
   p <- ggplot(pred_grid,
               aes(x = Years_since_fire,
                   y = fit,
                   color = species)) +
+    geom_ribbon(aes(ymin = lower, ymax = upper, fill = species),
+                alpha = 0.2, color = NA, show.legend = FALSE) +
     geom_line(linewidth = 1.2, aes(color = species)) +
     labs(
       x = "Years since fire",
       y = "Predicted cover",
       color = "Species",
-      title = paste("Graminoid", continent_level, fire_level, "intensity")
+      title = paste("Graminoids", continent_level, fire_level, "intensity")
     ) +
     theme_bw() +
+    scale_x_continuous(limits= c(1, 10), n.breaks = 6) +
+    scale_color_manual(values = c(
+      "#E69F00", "#56B4E9", "#009E73", "#F0E442",
+      "#0072B2", "#D55E00", "#CC79A7", "#000000"
+    ))+
+    scale_fill_manual(values = c(
+      "#E69F00", "#56B4E9", "#009E73", "#F0E442",
+      "#0072B2", "#D55E00", "#CC79A7", "#000000"
+    ))+
     theme(
       legend.position = "right",
       legend.text = element_text(size = 14),
@@ -449,12 +558,12 @@ prediction_plot <- function(grass_df, continent_level, fire_level) {
   return(p)
 }
 
-grassEUhigh_plot <- prediction_plot(grass_df, "Eurasia", "High")
-grassEUmed_plot  <- prediction_plot(grass_df, "Eurasia", "Medium")
-grassEUlow_plot  <- prediction_plot(grass_df, "Eurasia", "Low")
-grassNAhigh_plot  <- prediction_plot(grass_df, "North_America", "High")
-grassNAmed_plot  <- prediction_plot(grass_df, "North_America", "Medium")
-grassNAlow_plot  <- prediction_plot(grass_df, "North_America", "Low")
+grassEUhigh_plot <- prediction_plot(grass_filtered, "Eurasia", "High")
+grassEUmed_plot  <- prediction_plot(grass_filtered, "Eurasia", "Medium")
+grassEUlow_plot  <- prediction_plot(grass_filtered, "Eurasia", "Low")
+grassNAhigh_plot  <- prediction_plot(grass_filtered, "North_America", "High")
+grassNAmed_plot  <- prediction_plot(grass_filtered, "North_America", "Medium")
+grassNAlow_plot  <- prediction_plot(grass_filtered, "North_America", "Low")
 
 EUgrassplots <- grassEUhigh_plot / grassEUmed_plot / grassEUlow_plot
 EUgrassplots
@@ -468,29 +577,50 @@ moss_df <- df_long_sub %>%
   filter(PlantGroup == "bryophyte")
 
 #Filter out all species that appear less than three times
-moss_df <- moss_df %>%
-  group_by(species, Fire_Int_Groups) %>%
-  filter(n() >= 5) %>%
-  ungroup()
+moss_filtered <- moss_df %>%
+  group_by(species, Continent, Fire_Int_Groups) %>%
+  filter(n() >= 5, 
+         n_distinct(Years_since_fire) >= 5,
+         n_distinct(StudyID) >=2)%>%
+  ungroup() %>%
+  droplevels()
 
-prediction_plot <- function(moss_df, continent_level, fire_level) {
+prediction_plot <- function(moss_filtered, continent_level, fire_level) {
   
   # Filter data
-  df_sub <- moss_df %>%
+  df_sub <- moss_filtered %>%
     filter(Continent == continent_level,
            Fire_Int_Groups == fire_level) %>%
-    mutate(species = as.factor(species))
+    mutate(species = as.factor(species)) %>%
+    droplevels()
   
-  # Fit model
-  mod <- glmmTMB(
-    coverstd ~ Years_since_fire * species +
-      Temp_sc + Per_sc +
-      (1 | StudyID.x),
-    dispformula = ~ Years_since_fire,
-    weights = log(studysize),
-    family = beta_family(),
-    data = df_sub
-  )
+  # Number of species
+  n_sp <- nlevels(df_sub$species)
+  
+  # Fit model depending on number of species
+  if (n_sp > 1) {
+    mod <- gam(
+      coverstd ~ 
+        species +
+        s(Years_since_fire, species, bs = "fs", k = 5) +
+        Temp_sc +
+        s(StudyID, bs = "re"),
+      family = betar(link = "logit"),
+      data = df_sub,
+      method = "REML"
+    )
+  } else {
+    # Single-species model
+    mod <- gam(
+      coverstd ~ 
+        s(Years_since_fire, k = 5) +   # no species interaction
+        Temp_sc +
+        s(StudyID, bs = "re"),
+      family = betar(link = "logit"),
+      data = df_sub,
+      method = "REML"
+    )
+  }
   
   # Prediction grid
   pred_grid <- expand.grid(
@@ -500,8 +630,8 @@ prediction_plot <- function(moss_df, continent_level, fire_level) {
       length.out = 40
     ),
     species = levels(df_sub$species),
-    Per_sc = mean(df_sub$Per_sc, na.rm = TRUE),
-    Temp_sc = mean(df_sub$Temp_sc, na.rm = TRUE)
+    Temp_sc = mean(df_sub$Temp_sc, na.rm = TRUE),
+    StudyID = levels(df_sub$StudyID)[1]
   )
   
   # Predictions
@@ -510,25 +640,38 @@ prediction_plot <- function(moss_df, continent_level, fire_level) {
     newdata = pred_grid,
     type = "link",
     se.fit = TRUE,
-    re.form = NA
+    exclude = "s(StudyID)"  # ignore random effect
   )
   
-  eta <- pred$fit
-  pred_grid$fit   <- plogis(eta)
+  pred_grid$fit <- mod$family$linkinv(pred$fit)
+  pred_grid$upper <- mod$family$linkinv(pred$fit + 1.96 * pred$se.fit)
+  pred_grid$lower <- mod$family$linkinv(pred$fit - 1.96 * pred$se.fit)
+  
   
   # Plot
   p <- ggplot(pred_grid,
               aes(x = Years_since_fire,
                   y = fit,
                   color = species)) +
-    geom_line(linewidth = 1.2, aes(color = species)) +
+    geom_ribbon(aes(ymin = lower, ymax = upper, fill = species),
+                alpha = 0.2, color = NA, show.legend = FALSE) +
+    geom_line(linewidth = 1.4, aes(color = species)) +
     labs(
       x = "Years since fire",
       y = "Predicted cover",
       color = "Species",
-      title = paste("Bryophyte", continent_level, fire_level, "intensity")
+      title = paste("Bryophytes", continent_level, fire_level, "intensity")
     ) +
     theme_bw() +
+    scale_x_continuous(limits= c(1, 10), n.breaks = 6) +
+    scale_color_manual(values = c(
+      "#E69F00", "#56B4E9", "#009E73", "#F0E442",
+      "#0072B2", "#D55E00", "#CC79A7", "#000000"
+    ))+
+    scale_fill_manual(values = c(
+      "#E69F00", "#56B4E9", "#009E73", "#F0E442",
+      "#0072B2", "#D55E00", "#CC79A7", "#000000"
+    ))+
     theme(
       legend.position = "right",
       legend.text = element_text(size = 14),
@@ -545,22 +688,36 @@ prediction_plot <- function(moss_df, continent_level, fire_level) {
   return(p)
 }
 
-mossEUhigh_plot <- prediction_plot(moss_df, "Eurasia", "High")
-mossEUmed_plot  <- prediction_plot(moss_df, "Eurasia", "Medium")
-mossEUlow_plot  <- prediction_plot(moss_df, "Eurasia", "Low")
-mossNAhigh_plot  <- prediction_plot(moss_df, "North_America", "High")
-mossNAmed_plot  <- prediction_plot(moss_df, "North_America", "Medium")
-mossNAlow_plot  <- prediction_plot(moss_df, "North_America", "Low")
+mossEUhigh_plot <- prediction_plot(moss_filtered, "Eurasia", "High")
+mossEUmed_plot  <- prediction_plot(moss_filtered, "Eurasia", "Medium")
+mossEUlow_plot  <- prediction_plot(moss_filtered, "Eurasia", "Low")
+mossNAhigh_plot  <- prediction_plot(moss_filtered, "North_America", "High")
+mossNAmed_plot  <- prediction_plot(moss_filtered, "North_America", "Medium")
+mossNAlow_plot  <- prediction_plot(moss_filtered, "North_America", "Low")
 
 EUmossplots <- mossEUhigh_plot / mossEUmed_plot / mossEUlow_plot
 EUmossplots
 
-NAmossplots <- mossNAhigh_plot / mossNAmed_plot / mossNAlow_plot
+NAmossplots <- mossNAhigh_plot / mossNAmed_plot
 NAmossplots
 
 
-
-
+ggsave(EUherbplots, filename = "EUHerbs.png",
+       dpi = 300, height = 10.56, width = 13)
+ggsave(NAherbplots, filename = "NAHerbs.png",
+       dpi = 300, height = 10.56, width = 13)
+ggsave(NAdwarfplots, filename = "NAdwarf.png",
+       dpi = 300, height = 10.56, width = 13)
+ggsave(EUdwarfplots, filename = "EUDwarf.png",
+       dpi = 300, height = 10.56, width = 13)
+ggsave(NAgrassplots, filename = "NAGrass.png",
+       dpi = 300, height = 10.56, width = 13)
+ggsave(EUgrassplots, filename = "EUGrasss.png",
+       dpi = 300, height = 10.56, width = 13)
+ggsave(NAmossplots, filename = "NAMoss.png",
+       dpi = 300, height = 10.56, width = 13)
+ggsave(EUmossplots, filename = "EUMoss.png",
+       dpi = 300, height = 10.56, width = 13)
 
 
 
