@@ -110,6 +110,59 @@ df_long <- df_long %>%
 df_traits <- df_long %>%
   filter(! PlantGroup %in% "bryophyte")
 
+#Check missing data for traits
+
+trait_cols <- c("Dispersal_unit_dry_mass", "Seed_longevity")
+
+species_summary <- df_traits %>%
+  group_by(PlantGroup, species) %>%
+  summarise(
+    freq = n(),
+    across(all_of(trait_cols), \(x) mean(x, na.rm = TRUE)),
+    .groups = "drop"
+  ) %>%
+  arrange(PlantGroup, desc(freq))
+
+plantgroup_dfs <- species_summary %>%
+  select(-freq) %>%   # optional: remove frequency column
+  group_split(PlantGroup, keep = FALSE)
+
+species_sp_freq <- df_traits %>%
+  filter(str_detect(species, "_sp\\.$")) %>%
+  count(species, sort = TRUE)
+
+library(dplyr)
+library(stringr)
+
+species_sp_freq <- df_traits %>%
+  # keep only genus-level species
+  filter(str_detect(species, "_sp\\.$")) %>%
+  
+  # extract genus
+  mutate(genus = str_remove(species, "_sp\\.$")) %>%
+  
+  # count frequency
+  count(species, genus, sort = TRUE) %>%
+  
+  # for each genus, find matching full species
+  rowwise() %>%
+  mutate(
+    species_names = paste(
+      unique(
+        df_traits$species[
+          str_detect(df_traits$species, paste0("^", genus, "_")) &
+            !str_detect(df_traits$species, "_sp\\.$")
+        ]
+      ),
+      collapse = "; "
+    )
+  ) %>%
+  ungroup() %>%
+  select(-genus)
+
+
+writexl::write_xlsx(species_sp_freq, "Species_sp_freq.xlsx")
+
 # Names of species in each dataset
 species_try <- unique(TRY_Traits$species)
 species_df <- unique(df_long$species)
@@ -546,17 +599,6 @@ ggsave(plot = leafnitrogenplot, filename = "LEafnitrogen_ground.png", dpi =300,
 
 #Leaf_area
 
-Leaf_area_mod_REAL <- gls(
-  log(Area_cwm) ~
-    Years_since_fire * Fire_Int_Groups *
-    Continent +
-    poly(Temp_sc, 3) +
-    Per_sc,
-  data = ground_sub_cwm,
-  correlation = corCompSymm(form = ~ 1 | StudyID.x),
-  weights     = varPower(form = ~ studysize),
-  method      = "REML"
-)
 
 Leaf_area_mod <- gls(
   log(Area_cwm) ~
