@@ -152,3 +152,62 @@ results <- bind_cols(sites, sm_sites)
 head(results)
 
 write.csv(results, file = "SoilMoistureData.csv")
+
+
+####Clean data from Annual dynamics study
+
+df <- read.csv("Annual_Dynamics_dataVG.csv", sep = ";")
+
+df$Percent <- as.numeric(df$Percent)
+
+head(df)
+
+df_filled <- df %>%
+  complete(Site, Intensity, postfire, Latin, Transect,
+           Plot, fill = list(Percent = 0))
+
+output_df <- df_filled %>%
+  group_by(Site, Intensity, Latin, postfire) %>%
+  summarize(
+    TotalCover = mean(Percent, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+output_df <- output_df %>%
+  filter(!Intensity %in% "Control")
+
+output_df <- output_df %>%
+  filter(!postfire %in% "0")
+
+output_df <- output_df %>%
+  filter(!Latin %in% c("Cladina, Cladonia & Stereocaulon sp.
+", "Bryophyte sp.", "Poaceae sp.", "Umbilicaria muhlenbergii",
+                       "Lichen", "Erioderma pedicellatum",
+                       "Liliaceae sp.","Rosaceae sp.", "Stereocaulon sp."
+                       ))
+
+output_df <- output_df %>%
+  filter(!TotalCover %in% "0")
+
+writexl::write_xlsx(output_df, "Annual_Dynamics_Cleaned.xlsx")
+
+
+####
+#Initial Succession cleaning
+
+cover_df <- read.csv("IntSucc_Raw.csv")
+  
+meta_df <- read.csv("IntSucc_meta.csv")
+
+IntSuc_df <- cover_df %>%
+  cbind(meta_df, by = "Site_ID")
+
+IntSuc_df <- IntSuc_df %>%
+  select( Severity_Class, Year, 2:141)
+
+Final_df <- IntSuc_df %>%
+  group_by(Year, Severity_Class) %>%
+  summarise(across(1:139, ~mean(.x, na.rm = TRUE)), .groups = "drop")
+  )
+
+writexl::write_xlsx(Final_df, "IntSucc_Clean.xlsx")

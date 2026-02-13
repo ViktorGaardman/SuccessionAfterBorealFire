@@ -81,6 +81,15 @@ species_long_Temp <- species_long_meta %>%
 species_long_Perc <- species_long_Temp %>%
   left_join(Perc_Data, by = "Title")
 
+#Create a plantgroup column 
+species_long_Perc <- species_long_Perc %>%
+  mutate(
+    PlantGroup = str_extract(base, "(?<=_)[^_]+(?=_)")
+  )
+
+traits_bryo <- species_long_Perc %>%
+  filter(PlantGroup %in% "bryophyte")
+
 traits_wide <- TRY_Traits %>%
   select(-c("n_obs", "trait_SE", "trait_SD")) %>%
   pivot_wider(
@@ -99,12 +108,6 @@ df_long <- subset(df_long, !species == 0)
 
 df_long <- df_long %>% 
   mutate(across(c("Fire_Int_Groups", "Continent", "StudyID.x"), as.factor))
-
-#Create a plantgroup column 
-df_long <- df_long %>%
-  mutate(
-    PlantGroup = str_extract(base, "(?<=_)[^_]+(?=_)")
-  )
 
 #Filter out bryophytes
 df_traits <- df_long %>%
@@ -1143,3 +1146,145 @@ combinedtraitplot_tree
 ggsave(plot = combinedtraitplot_tree, filename = "traitplot_tree.TIFF",
        dpi = 450, height = 10.52, width =13)
 
+
+
+#####BRYOPHYTE TRAITS
+traits_bryo$Temp_sc <- as.numeric(scale(traits_bryo$Avg_Temp, center = TRUE, scale = TRUE))
+traits_bryo$Per_sc <- as.numeric(scale(traits_bryo$AvgPer, center = TRUE, scale = TRUE))
+
+Bryo_trait_data <- read.csv("bryoATT_Cleaned.csv", sep = ";")
+Bryo_trait_data <- Bryo_trait_data[,1:4]
+
+traits_bryo_df <- traits_bryo %>%
+  left_join(Bryo_trait_data, by = "species")
+
+traits_bryo_df <- traits_bryo_df %>%
+  filter(!is.na(Len))
+
+traits_bryo_df <- traits_bryo_df %>%
+  mutate(
+    studysize = Plot_size * Sample_size
+  )
+
+
+#Normalize studysize for better model fit
+traits_bryo_df$weight_sc <- traits_bryo_df$studysize / mean(traits_bryo_df$studysize)
+
+
+#Calculate community weighted means
+bryo.cwm <-   # New dataframe where we can inspect the result
+  traits_bryo_df %>%   # First step in the next string of statements
+  group_by(StudyID.x, RowID, Temp_sc, Per_sc, Fire_Int_Groups,
+           Years_since_fire, Continent, weight_sc) %>%   # Groups the summary file by Plot number
+  summarize(           # Coding for how we want our CWMs summarized
+    Length_cwm = weighted.mean(Len, cover, na.rm = TRUE),   # Actual calculation of CWMs
+  )
+
+ggplot(bryo.cwm, aes( x = log(Length_cwm))) + 
+  geom_histogram()
+
+#Trait models 
+
+#Length
+
+Length_mod <- gls(
+  log(Len) ~
+    Continent +
+    Years_since_fire +
+    poly(Temp_sc, 3),
+  data = traits_bryo_df,
+  correlation = corCompSymm(form = ~ 1 | StudyID.x),
+  weights     = varPower(form = ~ weight_sc),
+  method      = "REML"
+)
+
+Length_mod2 <- gls(
+  log(Len) ~
+    Continent +
+    Years_since_fire +
+    poly(Temp_sc, 3),
+  data = traits_bryo_df,
+  correlation = corCompSymm(form = ~ 1 | StudyID.x),
+  weights     = varPower(form = ~ weight_sc),
+  method      = "ML"
+)
+
+AIC_vals <- AIC(Length_mod, Length_mod2)
+AIC_vals$delta <- AIC_vals$AIC - min(AIC_vals$AIC)
+AIC_vals
+
+mod_fixed <- update(Length_mod, weights = varFixed(~ 1 / weight_sc), method = "ML")
+mod_power <- update(Length_mod, weights = varPower(form = ~ weight_sc), method = "ML")
+mod_exp   <- update(Length_mod, weights = varExp(form = ~ weight_sc), method = "ML")
+AIC(mod_fixed, mod_power, mod_exp)
+
+qqnorm(resid(Length_mod, type = "normalized"))
+qqline(resid(Length_mod, type = "normalized"))
+plot(Length_mod, resid(., type = "normalized") ~ fitted(.))
+summary(Length_mod)
+Anova(Length_mod, type = 'III')
+
+
+#Plot predictions!
+emm_length <- emmeans(
+  Length_mod,
+  ~ Years_since_fire | Continent,
+  at = list(
+    Years_since_fire = seq(
+      min(traits_bryo_df$Years_since_fire, na.rm = TRUE),
+      max(traits_bryo_df$Years_since_fire, na.rm = TRUE),
+      length.out = 40
+    ),
+    Temp_sc = mean(traits_bryo_df$Temp_sc, na.rm = TRUE)
+  ),
+  weights = 'proportional'
+)
+
+pred_grid_length <- as.data.frame(emm_length)
+
+pred_grid_length <- pred_grid_length %>%
+  mutate(
+    fit   = exp(emmean),
+    lower = exp(lower.CL),
+    upper = exp(upper.CL)
+  )
+
+
+pred_grid_length$Fire_Int_Groups <- factor(
+  pred_grid_length$Fire_Int_Groups,
+  levels = c("High", "Medium", "Low")
+)
+
+mosslength_plot <- ggplot(pred_grid_length,
+                             aes(x = Years_since_fire,
+                                 y = fit)) +
+  geom_ribbon(aes(ymin = lower, ymax = upper),
+              alpha = 0.2, color = NA, show.legend = FALSE) +
+  geom_line(linewidth = 1.2) +
+  facet_wrap(~ Continent,
+             labeller = labeller(
+               Continent = c(
+                 "Eurasia" = "Eurasia",
+                 "North_America" = "North America"))) +
+  labs(
+    x = "Years since fire",
+    y = "mm"
+  ) +
+  theme_bw() +
+  scale_x_continuous(limits = c(1,10), n.breaks = 6)+
+  ggtitle("Leafy shoot length")+
+  theme(legend.position="right",
+        legend.text=element_text(size=16),
+        legend.title=element_text(size=18),
+        legend.direction='vertical',
+        axis.title.x = element_blank(),
+        axis.title.y = element_text(size = 16),
+        axis.text = element_text(size = 14),
+        strip.text = element_text(size=16),
+        panel.grid.minor = element_blank(), 
+        panel.grid.major = element_blank(),
+        plot.title = element_text(size = 18, hjust = 0.5),
+        strip.background = element_rect(fill = "white", colour = "NA")) 
+
+
+mosslength_plot

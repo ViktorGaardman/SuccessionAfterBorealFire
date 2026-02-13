@@ -95,7 +95,7 @@ StudyPlot <- ggplot(df_studies, aes(x = Years_since_fire,
 StudyPlot
 
 #Size investigated
-df_sizes <- df %>%
+df_sizes2 <- df %>%
   mutate(
     studysize = Plot_size * Sample_size
   )
@@ -122,11 +122,13 @@ SizePlot <- ggplot(df_sizes, aes(x = Years_since_fire,
   theme_bw() +
   labs(
     x = "Years since fire",
-    y = expression(log10(Summed~area~studied~(m^2))),
+    y = expression(Summed~area~studied~(m^2)),
     fill = "Fire intensity"
   ) +
   scale_x_continuous(limits = c(0,22), n.breaks= 12) +
-#  scale_y_continuous(limits = c(0, 10), n.breaks = 6) +
+  scale_y_continuous(
+    labels = scales::label_math(10^.x)
+  )+
   theme(
     legend.position = "none",
     legend.text = element_text(size = 14),
@@ -144,11 +146,6 @@ SizePlot <- ggplot(df_sizes, aes(x = Years_since_fire,
 
 SizePlot
 
-df_sizes2$Fire_Int_Groups <- factor(
-  df_sizes2$Fire_Int_Groups,
-  levels = c("High", "Medium", "Low")
-)
-
 IndSizePlot <- ggplot(df_sizes2, aes(x = Years_since_fire,
                                  y = log10(studysize))) +
   geom_jitter(aes(color = Fire_Int_Groups), size = 2.5, 
@@ -162,11 +159,13 @@ IndSizePlot <- ggplot(df_sizes2, aes(x = Years_since_fire,
   theme_bw() +
   labs(
     x = "Years since fire",
-    y = expression(log10(Area~studied~(m^2))),
+    y = expression(Area~studied~(m^2)),
     fill = "Fire intensity"
   ) +
   scale_x_continuous(limits = c(0,22), n.breaks= 12) +
-  #  scale_y_continuous(limits = c(0, 10), n.breaks = 6) +
+  scale_y_continuous(
+    labels = scales::label_math(10^.x)
+  )+
   theme(
     legend.position = "none",
     legend.text = element_text(size = 14),
@@ -183,6 +182,8 @@ IndSizePlot <- ggplot(df_sizes2, aes(x = Years_since_fire,
   )
 
 IndSizePlot
+
+
 
 Figure1Plots <- (StudyPlot | DataPlot) / (SizePlot | IndSizePlot)
 
@@ -340,7 +341,7 @@ mod <- gam(
     s(Temp_sc, k = 5) +
     s(StudyID, bs = "re"),   # random effect
   family = betar(link = "logit"),
-  weights = log10(studysize),
+  weights = weights_sc,
   data = species,
   method = "REML"
 )
@@ -366,28 +367,25 @@ prediction_plot <- function(herbs_filtered, continent_level, fire_level) {
   
   # Fit model depending on number of species
   if (n_sp > 1) {
-    mod <- gam(
+    mod <- glmmTMB(
       coverstd ~ 
-        species +
-        s(Years_since_fire, species, bs = "fs", k = 5) +
-        s(Temp_sc, k =5) +
-        s(StudyID, bs = "re"),
-      family = betar(link = "logit"),
-      weights = log10(studysize),
-      data = df_sub,
-      method = "REML"
-    )
+        Years_since_fire * species +
+        Temp_sc +
+        (1 | StudyID),
+      family = beta_family(link = "logit"),
+      weights = weight_sc,
+      data = df_sub
+      )
   } else {
     # Single-species model
-    mod <- gam(
+    mod <- glmmTMB(
       coverstd ~ 
-        s(Years_since_fire, k = 5) +   # no species interaction
-        s(Temp_sc, k = 5) +
-        s(StudyID, bs = "re"),
-      family = betar(link = "logit"),
-      weights = log10(studysize),
-      data = df_sub,
-      method = "REML"
+        Years_since_fire +
+        Temp_sc +
+        (1 | StudyID),
+      family = beta_family(link = "logit"),
+      weights = weight_sc,
+      data = df_sub
     )
   }
   
@@ -413,7 +411,7 @@ prediction_plot <- function(herbs_filtered, continent_level, fire_level) {
     species = levels(df_sub$species),
     Temp_sc = mean(df_sub$Temp_sc, na.rm = TRUE),
     StudyID = levels(df_sub$StudyID)[1],
-    studysize = median(df_sub$studysize)
+    weight_sc = median(df_sub$weight_sc)
   )
    
   # Predictions
@@ -422,13 +420,12 @@ prediction_plot <- function(herbs_filtered, continent_level, fire_level) {
     newdata = pred_grid,
     type = "link",
     se.fit = TRUE,
-    exclude = "s(StudyID)"  # ignore random effect
+    re.form = NA  # ignore random effect
   )
   
-  pred_grid$fit <- mod$family$linkinv(pred$fit)
-  pred_grid$upper <- mod$family$linkinv(pred$fit + 1.96 * pred$se.fit)
-  pred_grid$lower <- mod$family$linkinv(pred$fit - 1.96 * pred$se.fit)
-
+  pred_grid$fit   <- plogis(pred$fit)
+  pred_grid$upper <- plogis(pred$fit + 1.96 * pred$se.fit)
+  pred_grid$lower <- plogis(pred$fit - 1.96 * pred$se.fit)
   
   # Plot
   p <- ggplot(pred_grid,
@@ -482,6 +479,7 @@ EUherbplots
 
 NAherbplots <- herbsNAhigh_plot / herbsNAmed_plot / herbsNAlow_plot
 NAherbplots
+
 ####
 #Dwarfshrubs
 
@@ -506,17 +504,32 @@ prediction_plot <- function(dwarf_filtered, continent_level, fire_level) {
     mutate(species = as.factor(species)) %>%
     droplevels()
   
-  # Fit model
-  mod <- gam(
-    coverstd ~ 
-      species +
-      s(Years_since_fire, species, bs = "fs", k = 5) +
-      Temp_sc+
-      s(StudyID, bs = "re"),   # random effect
-    family = betar(link = "logit"),
-    data = df_sub,
-    method = "REML"
-  )
+  # Number of species
+  n_sp <- nlevels(df_sub$species)
+  
+  # Fit model depending on number of species
+  if (n_sp > 1) {
+    mod <- glmmTMB(
+      coverstd ~ 
+        Years_since_fire * species +
+        Temp_sc +
+        (1 | StudyID),
+      family = beta_family(link = "logit"),
+      weights = weight_sc,
+      data = df_sub
+    )
+  } else {
+    # Single-species model
+    mod <- glmmTMB(
+      coverstd ~ 
+        Years_since_fire +
+        Temp_sc +
+        (1 | StudyID),
+      family = beta_family(link = "logit"),
+      weights = weight_sc,
+      data = df_sub
+    )
+  }
   
   #  pred_grid <- do.call(rbind, lapply(levels(df_sub$species), function(sp) {
   #   df_sp <- df_sub[df_sub$species == sp, ]
@@ -539,7 +552,8 @@ prediction_plot <- function(dwarf_filtered, continent_level, fire_level) {
     ),
     species = levels(df_sub$species),
     Temp_sc = mean(df_sub$Temp_sc, na.rm = TRUE),
-    StudyID = levels(df_sub$StudyID)[1]
+    StudyID = levels(df_sub$StudyID)[1],
+    weight_sc = median(df_sub$weight_sc)
   )
   
   # Predictions
@@ -548,12 +562,12 @@ prediction_plot <- function(dwarf_filtered, continent_level, fire_level) {
     newdata = pred_grid,
     type = "link",
     se.fit = TRUE,
-    exclude = "s(StudyID)"  # ignore random effect
+    re.form = NA  # ignore random effect
   )
   
-  pred_grid$fit <- mod$family$linkinv(pred$fit)
-  pred_grid$upper <- mod$family$linkinv(pred$fit + 1.96 * pred$se.fit)
-  pred_grid$lower <- mod$family$linkinv(pred$fit - 1.96 * pred$se.fit)
+  pred_grid$fit   <- plogis(pred$fit)
+  pred_grid$upper <- plogis(pred$fit + 1.96 * pred$se.fit)
+  pred_grid$lower <- plogis(pred$fit - 1.96 * pred$se.fit)
   
   
   # Plot
@@ -638,26 +652,25 @@ prediction_plot <- function(grass_filtered, continent_level, fire_level) {
   
   # Fit model depending on number of species
   if (n_sp > 1) {
-    mod <- gam(
+    mod <- glmmTMB(
       coverstd ~ 
-        species +
-        s(Years_since_fire, species, bs = "fs", k = 5) +
+        Years_since_fire * species +
         Temp_sc +
-        s(StudyID, bs = "re"),
-      family = betar(link = "logit"),
-      data = df_sub,
-      method = "REML"
+        (1 | StudyID),
+      family = beta_family(link = "logit"),
+      weights = weight_sc,
+      data = df_sub
     )
   } else {
     # Single-species model
-    mod <- gam(
+    mod <- glmmTMB(
       coverstd ~ 
-        s(Years_since_fire, k = 5) +   # no species interaction
+        Years_since_fire +
         Temp_sc +
-        s(StudyID, bs = "re"),
-      family = betar(link = "logit"),
-      data = df_sub,
-      method = "REML"
+        (1 | StudyID),
+      family = beta_family(link = "logit"),
+      weights = weight_sc,
+      data = df_sub
     )
   }
   
@@ -682,7 +695,8 @@ prediction_plot <- function(grass_filtered, continent_level, fire_level) {
     ),
     species = levels(df_sub$species),
     Temp_sc = mean(df_sub$Temp_sc, na.rm = TRUE),
-    StudyID = levels(df_sub$StudyID)[1]
+    StudyID = levels(df_sub$StudyID)[1],
+    weight_sc = median(df_sub$weight_sc)
   )
   
   # Predictions
@@ -691,12 +705,12 @@ prediction_plot <- function(grass_filtered, continent_level, fire_level) {
     newdata = pred_grid,
     type = "link",
     se.fit = TRUE,
-    exclude = "s(StudyID)"  # ignore random effect
+    re.form = NA  # ignore random effect
   )
   
-  pred_grid$fit <- mod$family$linkinv(pred$fit)
-  pred_grid$upper <- mod$family$linkinv(pred$fit + 1.96 * pred$se.fit)
-  pred_grid$lower <- mod$family$linkinv(pred$fit - 1.96 * pred$se.fit)
+  pred_grid$fit   <- plogis(pred$fit)
+  pred_grid$upper <- plogis(pred$fit + 1.96 * pred$se.fit)
+  pred_grid$lower <- plogis(pred$fit - 1.96 * pred$se.fit)
   
   
   # Plot
@@ -780,28 +794,39 @@ prediction_plot <- function(moss_filtered, continent_level, fire_level) {
   
   # Fit model depending on number of species
   if (n_sp > 1) {
-    mod <- gam(
+    mod <- glmmTMB(
       coverstd ~ 
-        species +
-        s(Years_since_fire, species, bs = "fs", k = 5) +
+        Years_since_fire * species +
         Temp_sc +
-        s(StudyID, bs = "re"),
-      family = betar(link = "logit"),
-      data = df_sub,
-      method = "REML"
+        (1 | StudyID),
+      family = beta_family(link = "logit"),
+      weights = weight_sc,
+      data = df_sub
     )
   } else {
     # Single-species model
-    mod <- gam(
+    mod <- glmmTMB(
       coverstd ~ 
-        s(Years_since_fire, k = 5) +   # no species interaction
+        Years_since_fire +
         Temp_sc +
-        s(StudyID, bs = "re"),
-      family = betar(link = "logit"),
-      data = df_sub,
-      method = "REML"
+        (1 | StudyID),
+      family = beta_family(link = "logit"),
+      weights = weight_sc,
+      data = df_sub
     )
   }
+  
+  #  pred_grid <- do.call(rbind, lapply(levels(df_sub$species), function(sp) {
+  #   df_sp <- df_sub[df_sub$species == sp, ]
+  #    data.frame(
+  #      Years_since_fire = seq(min(df_sp$Years_since_fire), max(df_sp$Years_since_fire), length.out = 40),
+  #      species = sp,
+  #      Per_sc = mean(df_sp$Per_sc, na.rm = TRUE),
+  #      Temp_sc = mean(df_sp$Temp_sc, na.rm = TRUE),
+  #      StudyID.x = NA
+  #      studysize <- median(df_sub$studysize, na.rm = TRUE)
+  #    )
+  #  }))
   
   # Prediction grid
   pred_grid <- expand.grid(
@@ -812,7 +837,8 @@ prediction_plot <- function(moss_filtered, continent_level, fire_level) {
     ),
     species = levels(df_sub$species),
     Temp_sc = mean(df_sub$Temp_sc, na.rm = TRUE),
-    StudyID = levels(df_sub$StudyID)[1]
+    StudyID = levels(df_sub$StudyID)[1],
+    weight_sc = median(df_sub$weight_sc)
   )
   
   # Predictions
@@ -821,12 +847,12 @@ prediction_plot <- function(moss_filtered, continent_level, fire_level) {
     newdata = pred_grid,
     type = "link",
     se.fit = TRUE,
-    exclude = "s(StudyID)"  # ignore random effect
+    re.form = NA  # ignore random effect
   )
   
-  pred_grid$fit <- mod$family$linkinv(pred$fit)
-  pred_grid$upper <- mod$family$linkinv(pred$fit + 1.96 * pred$se.fit)
-  pred_grid$lower <- mod$family$linkinv(pred$fit - 1.96 * pred$se.fit)
+  pred_grid$fit   <- plogis(pred$fit)
+  pred_grid$upper <- plogis(pred$fit + 1.96 * pred$se.fit)
+  pred_grid$lower <- plogis(pred$fit - 1.96 * pred$se.fit)
   
   
   # Plot
@@ -910,16 +936,7 @@ ggsave(EUmossplots, filename = "EUMoss.png",
 #Remake to include all three species by summing the cover of all
 
 #Normalize studysize for better model fit
-df_long$weight_sc <- df_long$studysize / mean(summed_cover$studysize)
-
-
-summed_cover <- df_long %>%
-  group_by(across(-c(base, species, cover))) %>%
-  summarize(
-    TotalCover = sum(cover),
-    .groups = "drop"
-  )
-
+df_long_sub$weight_sc <- df_long_sub$studysize / mean(df_long$studysize)
 
 #What if we include all three levels,
 
@@ -933,48 +950,61 @@ df_long$base <- as.factor(df_long$base)
 herbs_dom <- df_long %>%
   filter(PlantGroup == "herb")
 
-# Scale Cover to proportion (0–1) and avoid exact 0/1
-herbs_dom <- herbs_dom %>%
-  mutate(
-    Cover_prop = cover / 100.01       # adjust 0/100 for Beta regression
-  )
-
-range(herbs_dom$Cover_prop)
-
-#Max 10 years 
-
-herbs_dom <- herbs_dom %>%
-  filter(Years_since_fire >= 1, Years_since_fire <= 10)
+herbs_dom2 <- herbs_dom %>%
+  filter(base == "Dominant_herb_1")
 
 herbmod <- glmmTMB(
-  Cover_prop ~ 
+  coverstd ~ 
     ns(Years_since_fire, df = 4) * Fire_Int_Groups +
     ns(Temp_sc, df = 3) +
-    Per_sc +
-    (1 | base) +   # random intercept for dominance rank
-    (1 | StudyID),      # random intercept for study
+    (1 | StudyID/RowID),      # random intercept for study
   family = beta_family(link = "logit"),
   data = herbs_dom,
+  dispformula = ~ Fire_Int_Groups,
   weights = weight_sc
 )
+
+ggplot(herbs_dom, aes(x = Years_since_fire, y = coverstd)) +
+  geom_smooth(aes(color = Fire_Int_Groups)) +
+  geom_point(aes(color = Fire_Int_Groups)) + 
+  facet_grid(Continent~base)
+
+herbmod <- glmmTMB(
+  coverstd ~ 
+    ns(Years_since_fire, df = 4) * Fire_Int_Groups * base +
+    ns(Temp_sc, df = 3) +
+    (1 | StudyID/RowID),      # random intercept for study
+  family = beta_family(link = "logit"),
+  data = herbs_dom,
+  dispformula = ~ Fire_Int_Groups + base,
+    weights = weight_sc
+)
+
+herbmod2 <- glmmTMB(
+  coverstd ~ 
+    ns(Years_since_fire, df = 4) * Fire_Int_Groups * base +
+    ns(Temp_sc, df = 3) +
+    (1 | StudyID) +
+    (1|RowID),      # random intercept for study
+  family = beta_family(link = "logit"),
+  data = herbs_dom,
+  dispformula = ~ Fire_Int_Groups + base,
+  weights = weight_sc
+)
+
 
 AIC_vals <- AIC(herbmod, herbmod2)
 AIC_vals$delta <- AIC_vals$AIC - min(AIC_vals$AIC)
 AIC_vals
 
-res <- resid(herbmod, type = "pearson")
-fitted_vals <- fitted(herbmod)
-qqnorm(res)
-qqline(res, col = "red")
+simres <- simulateResiduals(herbmod)
+plot(simres)
 
-plot(fitted(herbmod), resid(herbmod, type="pearson"))
-abline(h=0, col="red", lty=2)
-
-pearson_resid <- resid(herbmod, type="pearson")
-df_resid <- df.residual(herbmod)
-sum(pearson_resid^2) / df_resid
-
-ranef(herbmod)
+herbs_dom$pred <- predict(herbmod, type = "response")
+plot(herbs_dom$pred, herbs_dom$coverstd,
+     xlab = "Predicted coverstd",
+     ylab = "Observed coverstd")
+abline(0,1, col="red")
 
 summary(herbmod)
 Anova(herbmod, type = 'III')
@@ -983,48 +1013,33 @@ Anova(herbmod, type = 'III')
 #Plot predictions!
 herb_pred <- emmeans(
   herbmod,
-  ~ Years_since_fire | Fire_Int_Groups,
+  ~ Years_since_fire | Fire_Int_Groups * base,
   at = list(
     Years_since_fire = seq(
       min(herbs_dom$Years_since_fire, na.rm = TRUE),
       max(herbs_dom$Years_since_fire, na.rm = TRUE),
       length.out = 40
     ),
-    Per_sc = mean(herbs_dom$Per_sc, na.rm = TRUE),
+#    Per_sc = mean(herbs_dom$Per_sc, na.rm = TRUE),
     Temp_sc = mean(herbs_dom$Temp_sc, na.rm = TRUE)
-  ),
-  weights = 'proportional'
+  )
 )
 
-###NEW####
-pred_grid <- as.data.frame(herb_pred) %>%
+pred_grid_herb <- as.data.frame(summary(herb_pred, infer = TRUE))
+
+pred_grid_herb <- pred_grid_herb %>%
   mutate(
-    fit_cover   = emmean * 100,   # back-transform to cover %
-    lower_cover = lower.CL * 100,
-    upper_cover = upper.CL * 100
+    fit   = plogis(emmean),
+    lower = plogis(asymp.LCL),
+    upper = plogis(asymp.UCL)
   )
-#####
-
-#########NEW###
-
-# Sum predicted cover for top 3 species per combination
-pred_summed <- pred_grid %>%
-  group_by(Years_since_fire, Fire_Int_Groups) %>%
-  summarise(
-    fit = sum(fit_cover),
-    lower = sum(lower_cover),
-    upper = sum(upper_cover),
-    .groups = "drop"
-  )
-
-############
 
 pred_grid_herb$Fire_Int_Groups <- factor(
   pred_grid_herb$Fire_Int_Groups,
   levels = c("High", "Medium", "Low")
 )
 
-predherbplot <- ggplot(pred_summed,
+predherbplot <- ggplot(pred_grid_herb,
        aes(x = Years_since_fire,
            y = fit,
            color = Fire_Int_Groups,
@@ -1036,9 +1051,14 @@ predherbplot <- ggplot(pred_summed,
   scale_fill_manual(values = c("firebrick", "goldenrod", "cornflowerblue")) + 
   labs(
     x = "Time since fire (years)",
-    y = "Predicted summed cover",
+    y = "Predicted cover",
     color = "Fire intensity"
   ) +
+  facet_wrap( ~ base,
+             labeller = labeller(
+               base = c("Dominant_herb_1" = "Most dominant sp.",
+                        "Dominant_herb_2" = "Second most dominant sp.",
+                        "Dominant_herb_3" = "Third most dominant sp."))) +
   scale_x_continuous(limits = c(1,10), n.breaks = 6) +
   theme_bw() +
   ggtitle("Herbs")+
@@ -1046,7 +1066,7 @@ predherbplot <- ggplot(pred_summed,
         legend.text=element_text(size=16),
         legend.title=element_text(size=18),
         legend.direction='vertical',
-        axis.title.x = element_text(size = 18),
+        axis.title.x = element_blank(),
         axis.title.y = element_text(size = 16),
         axis.text = element_text(size = 14),
         strip.text = element_text(size=16),
@@ -1064,65 +1084,87 @@ ggsave(plot = predherbplot, filename = "Pred_herb_plot.png", dpi =300,
 
 ####
 #DWARFSHRUBS
-
-dwarf_dom <- summed_cover %>%
+dwarf_dom <- df_long %>%
   filter(PlantGroup == "dwarfshrub")
 
-ggplot(dwarf_dom, aes(x = Years_since_fire)) +
-  geom_histogram(aes(fill = Fire_Int_Groups)) +
-  facet_wrap(~Continent)
+# Scale Cover to proportion (0–1) and avoid exact 0/1
+dwarf_dom <- dwarf_dom %>%
+  mutate(
+    CoverStd = cover / 100.01       # adjust 0/100 for Beta regression
+  )
 
-dwarfmod <- gls(
-  log(TotalCover) ~
-    poly(Years_since_fire, 3) * Fire_Int_Groups * Continent +
-    poly(Temp_sc, 2) +
-    poly(Per_sc, 3),
+range(dwarf_dom$CoverStd)
+
+ggplot(dwarf_dom, aes(x = Years_since_fire, y = CoverStd)) +
+  geom_smooth(aes(color = Fire_Int_Groups)) +
+  geom_point(aes(color = Fire_Int_Groups)) + 
+  facet_grid(Continent ~base)
+
+dwarf_mod <- glmmTMB(
+  CoverStd ~ 
+    Fire_Int_Groups * base +
+    Years_since_fire +
+    ns(Per_sc, df = 3) +
+    (1 | StudyID / RowID),      # random intercept for study
+  family = beta_family(link = "logit"),
   data = dwarf_dom,
-  correlation = corCompSymm(form = ~ 1 | StudyID),
-  weights     = varPower(form = ~ weight_sc),
-  method      = "REML"
+  dispformula = ~ Fire_Int_Groups + base + Years_since_fire,
+  weights = weight_sc
 )
 
-AIC_vals <- AIC(dwarfmod, dwarfmod2)
+dwarf_mod2 <- glmmTMB(
+  CoverStd ~ 
+    Fire_Int_Groups *  base +
+    Years_since_fire +
+    ns(Per_sc, df = 3) +
+    (1 | StudyID / RowID),      # random intercept for study
+  family = beta_family(link = "logit"),
+  data = dwarf_dom,
+    dispformula = ~ Fire_Int_Groups + base + Years_since_fire,
+  weights = weight_sc
+)
+
+AIC_vals <- AIC(dwarf_mod, dwarf_mod2)
 AIC_vals$delta <- AIC_vals$AIC - min(AIC_vals$AIC)
 AIC_vals
 
-mod_fixed <- update(dwarfmod, weights = varFixed(~ 1 / weight_sc), method = "ML")
-mod_power <- update(dwarfmod, weights = varPower(form = ~ weight_sc), method = "ML")
-mod_exp   <- update(dwarfmod, weights = varExp(form = ~ weight_sc), method = "ML")
-AIC(mod_fixed, mod_power, mod_exp)
+simres <- simulateResiduals(dwarf_mod)
+plot(simres)
 
-qqnorm(resid(dwarfmod, type = "normalized"))
-qqline(resid(dwarfmod, type = "normalized"))
-plot(dwarfmod, resid(., type = "normalized") ~ fitted(.))
-summary(dwarfmod)
-Anova(dwarfmod, type = 'III')
+dwarf_dom$pred <- predict(dwarf_mod2, type = "response")
+plot(dwarf_dom$pred, dwarf_dom$coverstd,
+     xlab = "Predicted coverstd",
+     ylab = "Observed coverstd")
+abline(0,1, col="red")
+
+summary(dwarf_mod)
+Anova(dwarf_mod, type = 'III')
+
+
 
 #Plot predictions!
 dwarf_pred <- emmeans(
-  dwarfmod,
-  ~ Years_since_fire | Fire_Int_Groups * Continent,
+  dwarf_mod,
+  ~ Years_since_fire | base * Fire_Int_Groups,
   at = list(
     Years_since_fire = seq(
       min(dwarf_dom$Years_since_fire, na.rm = TRUE),
       max(dwarf_dom$Years_since_fire, na.rm = TRUE),
       length.out = 40
     ),
-    Per_sc = mean(dwarf_dom$Per_sc, na.rm = TRUE),
-    Temp_sc = mean(dwarf_dom$Temp_sc, na.rm = TRUE)
-  ),
-  weights = 'proportional'
+    Per_sc = mean(dwarf_dom$Per_sc, na.rm = TRUE)
+#    Temp_sc = mean(herbs_dom$Temp_sc, na.rm = TRUE)
+  )
 )
 
-pred_grid_dwarf <- as.data.frame(dwarf_pred)
+pred_grid_dwarf <- as.data.frame(summary(dwarf_pred, infer = TRUE))
 
 pred_grid_dwarf <- pred_grid_dwarf %>%
   mutate(
-    fit   = exp(emmean),
-    lower = exp(lower.CL),
-    upper = exp(upper.CL)
+    fit   = plogis(emmean),
+    lower = plogis(asymp.LCL),
+    upper = plogis(asymp.UCL)
   )
-
 
 pred_grid_dwarf$Fire_Int_Groups <- factor(
   pred_grid_dwarf$Fire_Int_Groups,
@@ -1135,29 +1177,29 @@ preddwarfplot <- ggplot(pred_grid_dwarf,
                            color = Fire_Int_Groups)) +
   geom_ribbon(aes(ymin = lower, ymax = upper, fill = Fire_Int_Groups),
               alpha = 0.2, color = NA, show.legend = FALSE) +
+  
   geom_line(linewidth = 1.2) +
-  facet_wrap(~ Continent,
-             labeller = labeller(
-               Continent = c(
-                 "Eurasia" = "Eurasia",
-                 "North_America" = "North America"))) +
   scale_color_manual(values = c("firebrick", "goldenrod", "cornflowerblue")) + 
   scale_fill_manual(values = c("firebrick", "goldenrod", "cornflowerblue")) + 
   labs(
     x = "Time since fire (years)",
-    y = "Predicted summed cover",
+    y = "Predicted cover",
     color = "Fire intensity"
   ) +
+  facet_wrap(~ base,
+              labeller = labeller(
+                base = c("Dominant_dwarfshrub_1" = "Most dominant sp.",
+                         "Dominant_dwarfshrub_2" = "Second most dominant sp.",
+                         "Dominant_dwarfshrub_3" = "Third most dominant sp."))) +
   scale_x_continuous(limits = c(1,10), n.breaks = 6) +
   theme_bw() +
   ggtitle("Dwarfshrubs")+
-  scale_y_continuous(limits = c(0,100)) +
-  theme(legend.position="none",
+  theme(legend.position="right",
         legend.text=element_text(size=16),
         legend.title=element_text(size=18),
         legend.direction='vertical',
-        axis.title.x = element_text(size = 18),
-        axis.title.y = element_text(size = 16),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
         axis.text = element_text(size = 14),
         strip.text = element_text(size=16),
         panel.grid.minor = element_blank(), 
@@ -1175,28 +1217,715 @@ ggsave(plot = preddwarfplot, filename = "Pred_dwarf_plot.png", dpi =300,
 ####
 #Graminoids
 
-grass_dom <- summed_cover %>%
+grass_dom <-df_long %>%
   filter(PlantGroup == "graminoid")
 
-ggplot(grass_dom, aes(x = Years_since_fire)) +
+# Scale Cover to proportion (0–1) and avoid exact 0/1
+grass_dom <- grass_dom %>%
+  mutate(
+    CoverStd = cover / 100.01       # adjust 0/100 for Beta regression
+  )
+
+range(grass_dom$CoverStd)
+
+
+#Very few 2nd & 3rd dominant. Combine to one
+
+grass_dom$Dominance <- fct_collapse(
+  grass_dom$base,
+  Dominant_graminoid_1 = "Dominant_graminoid_1",
+  Dominant_graminoid_2 = c("Dominant_graminoid_2", "Dominant_graminoid_3")
+)
+
+ggplot(grass_dom, aes(x = Years_since_fire, y = CoverStd)) +
+  geom_smooth(aes(color = Fire_Int_Groups)) +
+  geom_point(aes(color = Fire_Int_Groups)) + 
+  facet_grid(Continent~Dominance)
+
+grass_mod <- glmmTMB(
+  CoverStd ~ 
+    Years_since_fire +
+    Fire_Int_Groups * Dominance +
+    Continent +
+    (1 | StudyID / RowID),      # random intercept for study
+  family = beta_family(link = "logit"),
+  dispformula = ~ Continent + Fire_Int_Groups,
+  data = grass_dom,
+  weights = weight_sc
+)
+
+grass_mod2 <- glmmTMB(
+  CoverStd ~ 
+    Years_since_fire +
+    Fire_Int_Groups * Dominance +
+    Continent +
+    Temp_sc +
+    (1 | StudyID / RowID),      # random intercept for study
+  family = beta_family(link = "logit"),
+  data = grass_dom,
+  dispformula = ~ Continent + Fire_Int_Groups,
+  weights = weight_sc
+)
+
+
+AIC_vals <- AIC(grass_mod, grass_mod2)
+AIC_vals$delta <- AIC_vals$AIC - min(AIC_vals$AIC)
+AIC_vals
+
+simres <- simulateResiduals(grass_mod)
+plot(simres)
+
+grass_dom$pred <- predict(grass_mod, type = "response")
+plot(grass_dom$pred, grass_dom$coverstd,
+     xlab = "Predicted coverstd",
+     ylab = "Observed coverstd")
+abline(0,1, col="red")
+
+summary(grass_mod)
+Anova(grass_mod, type = 'III')
+
+
+#Plot predictions!
+grass_pred <- emmeans(
+  grass_mod,
+  ~ Years_since_fire | Dominance* Fire_Int_Groups * Continent,
+  at = list(
+    Years_since_fire = seq(
+      min(grass_dom$Years_since_fire, na.rm = TRUE),
+      max(grass_dom$Years_since_fire, na.rm = TRUE),
+      length.out = 40
+    ),
+   # Per_sc = mean(grass_dom$Per_sc, na.rm = TRUE)
+        Temp_sc = mean(grass_dom$Temp_sc, na.rm = TRUE)
+  )
+)
+
+pred_grid_grass <- as.data.frame(summary(grass_pred, infer = TRUE))
+
+pred_grid_grass <- pred_grid_grass %>%
+  mutate(
+    fit   = plogis(emmean),
+    lower = plogis(asymp.LCL),
+    upper = plogis(asymp.UCL)
+  )
+
+pred_grid_grass$Fire_Int_Groups <- factor(
+  pred_grid_grass$Fire_Int_Groups,
+  levels = c("High", "Medium", "Low")
+)
+
+predgramplot <- ggplot(pred_grid_grass,
+                        aes(x = Years_since_fire,
+                            y = fit,
+                            color = Fire_Int_Groups)) +
+  geom_ribbon(aes(ymin = lower, ymax = upper, fill = Fire_Int_Groups),
+              alpha = 0.2, color = NA, show.legend = FALSE) +
+  geom_line(linewidth = 1.2) +
+    scale_color_manual(values = c("firebrick", "goldenrod", "cornflowerblue")) + 
+    scale_fill_manual(values = c("firebrick", "goldenrod", "cornflowerblue")) + 
+  labs(
+    x = "Years since fire",
+    y = "Predicted cover",
+    color = "Fire intensity"
+  ) +
+  facet_grid(Continent ~ Dominance,
+             labeller = labeller(
+               Dominance = c("Dominant_graminoid_1" = "Most dominant sp.",
+                        "Dominant_graminoid_2" = "Second most dominant sp."),
+                        Continent = c(
+                          "Eurasia" = " ",
+                          "North_America" = " "
+))) +
+  scale_x_continuous(limits = c(1,10), n.breaks = 6) +
+  theme_bw() +
+  ggtitle("Graminoids")+
+  theme(legend.position="none",
+        legend.text=element_text(size=16),
+        legend.title=element_text(size=18),
+        legend.direction='vertical',
+        axis.title.x = element_text(size = 18),
+        axis.title.y = element_text(size = 16),
+        axis.text = element_text(size = 14),
+        strip.text = element_text(size=16),
+        panel.grid.minor = element_blank(), 
+        panel.grid.major = element_blank(),
+        plot.title = element_text(size = 18, hjust = 0.5),
+        strip.background = element_rect(fill = "white", colour = "NA")) 
+
+predgramplot
+
+ggsave(plot = predgramplot, filename = "Pred_gram_plot.png", dpi =300,
+       height = 4.2, width = 6.5)
+
+
+
+
+
+####
+#Trees
+
+tree_dom <- df_long %>%
+  filter(PlantGroup == "tree")
+
+tree_dom <- tree_dom %>%
+  filter(!is.na(cover))
+
+ggplot(tree_dom, aes(x = Years_since_fire)) +
   geom_histogram(aes(fill = Fire_Int_Groups)) +
   facet_wrap(~Continent)
 
-grassmod <- gls(
-  log(TotalCover) ~
-    Years_since_fire * Fire_Int_Groups * Continent +
+# Scale Cover to proportion (0–1) and avoid exact 0/1
+tree_dom <- tree_dom %>%
+  mutate(
+    CoverStd = cover / 100.01       # adjust 0/100 for Beta regression
+  )
+
+range(tree_dom$CoverStd)
+
+
+ggplot(tree_dom, aes(x = Years_since_fire, y = CoverStd)) +
+  geom_smooth(aes(color = Fire_Int_Groups)) +
+  geom_point(aes(color = Fire_Int_Groups)) + 
+  facet_grid(Continent ~ base)
+
+
+
+#Europe has shit data for eerything but most dominant in low and medium int.
+#Can we subset the dataset somehow to account for this?
+#Let's start with just NA
+
+Tree_NA <- tree_dom %>%
+  filter(Continent == "North_America")
+
+tree_modNA <- glmmTMB(
+  coverstd ~ 
+    Years_since_fire * Fire_Int_Groups +
+    Years_since_fire * base +
+    Fire_Int_Groups * base +
+    Per_sc +
     Temp_sc +
+    (1 | StudyID / RowID),      # random intercept for study
+  family = beta_family(link = "logit"),
+  dispformula = ~ Years_since_fire + base,
+  data = Tree_NA,
+  weights = weight_sc
+)
+
+AIC_vals <- AIC(tree_mod, tree_mod2)
+AIC_vals$delta <- AIC_vals$AIC - min(AIC_vals$AIC)
+AIC_vals
+
+simres <- simulateResiduals(tree_mod)
+plot(simres)
+
+Tree_NA$pred <- predict(tree_modNA, type = "response")
+plot(Tree_NA$pred, Tree_NA$coverstd,
+     xlab = "Predicted coverstd",
+     ylab = "Observed coverstd")
+abline(0,1, col="red")
+
+summary(tree_mod)
+Anova(tree_mod, type = 'III')
+
+
+#Plot predictions!
+tree_pred_NA <- emmeans(
+  tree_modNA,
+  ~ Years_since_fire | base * Fire_Int_Groups,
+  at = list(
+    Years_since_fire = seq(
+      min(Tree_NA$Years_since_fire, na.rm = TRUE),
+      max(Tree_NA$Years_since_fire, na.rm = TRUE),
+      length.out = 40
+    ),
+     Per_sc = mean(Tree_NA$Per_sc, na.rm = TRUE),
+    Temp_sc = mean(Tree_NA$Temp_sc, na.rm = TRUE)
+  )
+)
+
+pred_grid_tree_NA <- as.data.frame(summary(tree_pred_NA, infer = TRUE))
+
+pred_grid_tree_NA <- pred_grid_tree_NA %>%
+  mutate(
+    fit   = plogis(emmean),
+    lower = plogis(asymp.LCL),
+    upper = plogis(asymp.UCL)
+  )
+
+pred_grid_tree_NA$Fire_Int_Groups <- factor(
+  pred_grid_tree_NA$Fire_Int_Groups,
+  levels = c("High", "Medium", "Low")
+)
+
+predtreeplot_NA <- ggplot(pred_grid_tree_NA,
+                       aes(x = Years_since_fire,
+                           y = fit,
+                           color = Fire_Int_Groups)) +
+  geom_ribbon(aes(ymin = lower, ymax = upper, fill = Fire_Int_Groups),
+              alpha = 0.2, color = NA, show.legend = FALSE) +
+  geom_line(linewidth = 1.2) +
+  scale_color_manual(values = c("firebrick", "goldenrod", "cornflowerblue")) + 
+  scale_fill_manual(values = c("firebrick", "goldenrod", "cornflowerblue")) + 
+  labs(
+    x = "Time since fire (years)",
+    y = "Predicted cover",
+    color = "Fire intensity"
+  ) +
+  facet_wrap(~ base,
+             labeller = labeller(
+               base = c("Dominant_tree_1" = "Most dominant sp.",
+                             "Dominant_tree_2" = "Second most dominant sp.",
+                        "Dominant_tree_3" = "Third most dominant sp.",
+                        "Dominant_tree_4" = "Fourth most dominant sp."))) +
+  scale_x_continuous(limits = c(1,10), n.breaks = 6) +
+  theme_bw() +
+  ggtitle("Trees North America")+
+  theme(legend.position="right",
+        legend.text=element_text(size=16),
+        legend.title=element_text(size=18),
+        legend.direction='vertical',
+        axis.title.x = element_blank(),
+        axis.title.y = element_text(size = 16),
+        axis.text = element_text(size = 14),
+        strip.text = element_text(size=16),
+        panel.grid.minor = element_blank(), 
+        panel.grid.major = element_blank(),
+        plot.title = element_text(size = 18, hjust = 0.5),
+        strip.background = element_rect(fill = "white", colour = "NA"))
+
+predtreeplot_NA
+
+
+Tree_EU <- tree_dom %>%
+  filter(Continent == "Eurasia")
+
+#Use only two levels of dominance
+Tree_EU$Dominance <- fct_collapse(
+  Tree_EU$base,
+  Dominant_tree_1 = "Dominant_tree_1",
+  Dominant_tree_2 = c("Dominant_tree_2", "Dominant_tree_3",
+                      "Dominant_tree_4")
+)
+
+#Remove low intensity
+Tree_EU <- Tree_EU %>%
+  filter(!Fire_Int_Groups %in% "Low")
+
+tree_mod <- glmmTMB(
+  coverstd ~ 
+    Years_since_fire +
+    Fire_Int_Groups * Dominance +
+    Per_sc +
+    ns(Temp_sc, df = 2) +
+    (1 | StudyID / RowID),      # random intercept for study
+  family = beta_family(link = "logit"),
+  dispformula = ~ Years_since_fire + Dominance,
+  data = Tree_EU,
+  weights = weight_sc
+)
+
+AIC_vals <- AIC(tree_mod, tree_mod2)
+AIC_vals$delta <- AIC_vals$AIC - min(AIC_vals$AIC)
+AIC_vals
+
+simres <- simulateResiduals(tree_mod)
+plot(simres)
+
+Tree_EU$pred <- predict(tree_mod, type = "response")
+plot(Tree_EU$pred, Tree_EU$coverstd,
+     xlab = "Predicted coverstd",
+     ylab = "Observed coverstd")
+abline(0,1, col="red")
+
+summary(tree_mod)
+Anova(tree_mod, type = 'III')
+
+
+#Plot predictions!
+tree_pred <- emmeans(
+  tree_mod,
+  ~ Years_since_fire | Dominance * Fire_Int_Groups,
+  at = list(
+    Years_since_fire = seq(
+      min(Tree_EU$Years_since_fire, na.rm = TRUE),
+      max(Tree_EU$Years_since_fire, na.rm = TRUE),
+      length.out = 40
+    ),
+    Per_sc = mean(Tree_EU$Per_sc, na.rm = TRUE),
+    Temp_sc = mean(Tree_EU$Temp_sc, na.rm = TRUE)
+  )
+)
+
+pred_grid_tree <- as.data.frame(summary(tree_pred, infer = TRUE))
+
+pred_grid_tree <- pred_grid_tree %>%
+  mutate(
+    fit   = plogis(emmean),
+    lower = plogis(asymp.LCL),
+    upper = plogis(asymp.UCL)
+  )
+
+pred_grid_tree$Fire_Int_Groups <- factor(
+  pred_grid_tree$Fire_Int_Groups,
+  levels = c("High", "Medium")
+)
+
+predtreeplot_EU <- ggplot(pred_grid_tree,
+                          aes(x = Years_since_fire,
+                              y = fit,
+                              color = Fire_Int_Groups)) +
+  geom_ribbon(aes(ymin = lower, ymax = upper, fill = Fire_Int_Groups),
+              alpha = 0.2, color = NA, show.legend = FALSE) +
+  geom_line(linewidth = 1.2) +
+  scale_color_manual(values = c("firebrick", "goldenrod")) + 
+  scale_fill_manual(values = c("firebrick", "goldenrod")) + 
+  labs(
+    x = "Time since fire (years)",
+    y = "Predicted cover",
+    color = "Fire intensity"
+  ) +
+  facet_wrap(~ Dominance,
+             labeller = labeller(
+               Dominance = c("Dominant_tree_1" = "Most dominant sp.",
+                        "Dominant_tree_2" = "Second most dominant sp."))) +
+  scale_x_continuous(limits = c(1,10), n.breaks = 6) +
+  theme_bw() +
+  ggtitle("Trees Europe")+
+  theme(legend.position="none",
+        legend.text=element_text(size=16),
+        legend.title=element_text(size=18),
+        legend.direction='vertical',
+        axis.title.x = element_text(size = 16),
+        axis.title.y = element_text(size = 16),
+        axis.text = element_text(size = 14),
+        strip.text = element_text(size=16),
+        panel.grid.minor = element_blank(), 
+        panel.grid.major = element_blank(),
+        plot.title = element_text(size = 18, hjust = 0.5),
+        strip.background = element_rect(fill = "white", colour = "NA"))
+
+predtreeplot_EU
+
+
+ggsave(plot = predtreeplot_EU, filename = "Pred_tree_plot_EU.png", dpi =300,
+       height = 4.2, width = 6.5)
+
+
+#####
+#Shrubs
+#Model is shit, can't be used.
+
+shrubs_dom <- df_long %>%
+  filter(PlantGroup == "shrub")
+
+shrubs_dom <- shrubs_dom %>%
+  filter(!is.na(coverstd))
+
+#Only data from one study in Europe. Use only NA for shrub model
+shrubs_dom <- shrubs_dom %>%
+  filter(! Continent %in% "Eurasia")
+
+ggplot(shrubs_dom, aes(x = Years_since_fire, y = coverstd)) +
+  geom_smooth(aes(color = Fire_Int_Groups)) +
+  geom_point(aes(color = Fire_Int_Groups)) +
+  facet_wrap(~ Dominance)
+
+#Remove Medium intensity, we don't have enough data
+shrubs_dom <- shrubs_dom %>%
+  filter(!Fire_Int_Groups %in% "Medium")
+
+#Very few 2nd & 3rd dominant. Combine to one
+
+shrubs_dom$Dominance <- fct_collapse(
+  shrubs_dom$base,
+  Dominant_shrub_1 = "Dominant_shrub_1",
+  Dominant_shrub_2 = c("Dominant_shrub_2", "Dominant_shrub_3")
+)
+
+#Actually just use most dominant
+shrubs_dom <- shrubs_dom %>%
+  filter(Dominance == "Dominant_shrub_1")
+
+shrub_mod <- glmmTMB(
+  coverstd ~ 
+  Years_since_fire +
+   Temp_sc +
+    Per_sc +
+    (1 | StudyID),      # random intercept for study
+  family = beta_family(link = "logit"),
+#  dispformula = ~ Fire_Int_Groups,
+  data = shrubs_dom,
+  weights = weight_sc
+)
+
+shrub_mod2 <- glmmTMB(
+  coverstd ~ 
+    Years_since_fire +
+    Temp_sc +
+    Per_sc +
+    (1 | StudyID),      # random intercept for study
+  family = beta_family(link = "logit"),
+  #  dispformula = ~ Fire_Int_Groups,
+  data = shrubs_dom,
+  weights = weight_sc
+)
+
+AIC_vals <- AIC(shrub_mod, shrub_mod2)
+AIC_vals$delta <- AIC_vals$AIC - min(AIC_vals$AIC)
+AIC_vals
+
+simres <- simulateResiduals(shrub_mod)
+plot(simres)
+
+shrubs_dom$pred <- predict(shrub_mod, type = "response")
+plot(shrubs_dom$pred, shrubs_dom$coverstd,
+     xlab = "Predicted coverstd",
+     ylab = "Observed coverstd")
+abline(0,1, col="red")
+
+summary(shrub_mod)
+Anova(shrub_mod, type = 'III')
+
+
+#Plot predictions!
+shrub_pred <- emmeans(
+  shrub_mod,
+  ~ Years_since_fire,
+  at = list(
+    Years_since_fire = seq(
+      min(shrubs_dom$Years_since_fire, na.rm = TRUE),
+      max(shrubs_dom$Years_since_fire, na.rm = TRUE),
+      length.out = 40
+    ),
+        Per_sc = mean(shrubs_dom$Per_sc, na.rm = TRUE),
+    Temp_sc = mean(shrubs_dom$Temp_sc, na.rm = TRUE)
+  )
+)
+
+pred_grid_shrub <- as.data.frame(summary(shrub_pred, infer = TRUE))
+
+pred_grid_shrub <- pred_grid_shrub %>%
+  mutate(
+    fit   = plogis(emmean),
+    lower = plogis(asymp.LCL),
+    upper = plogis(asymp.UCL)
+  )
+
+predshrubplot <- ggplot(pred_grid_shrub,
+                       aes(x = Years_since_fire,
+                           y = fit)) +
+  geom_ribbon(aes(ymin = lower, ymax = upper),
+              alpha = 0.2, color = NA, show.legend = FALSE) +
+  geom_line(linewidth = 1.2) +
+  labs(
+    x = "Time since fire (years)",
+    y = "Predicted cover",
+    color = "Fire intensity"
+  ) +
+  scale_x_continuous(limits = c(1,10), n.breaks = 6) +
+  theme_bw() +
+  ggtitle("Most dominant shrub in North America")+
+  theme(legend.position="none",
+        legend.text=element_text(size=16),
+        legend.title=element_text(size=18),
+        legend.direction='vertical',
+        axis.title.x = element_text(size = 16),
+        axis.title.y = element_blank(),
+        axis.text = element_text(size = 14),
+        strip.text = element_text(size=16),
+        panel.grid.minor = element_blank(), 
+        panel.grid.major = element_blank(),
+        plot.title = element_text(size = 18, hjust = 0.5),
+        strip.background = element_rect(fill = "white", colour = "NA")) 
+
+
+predshrubplot
+
+ggsave(plot = predshrubplot, filename = "Pred_shrub_plot.png", dpi =300,
+       height = 4.2, width = 6.5)
+
+#####
+#Mosses
+bryo_dom <- df_long %>%
+  filter(PlantGroup == "bryophyte")
+
+bryo_dom <- bryo_dom %>%
+  filter(!is.na(coverstd))
+
+ggplot(bryo_dom, aes(x = Years_since_fire, y = coverstd)) +
+  geom_point(aes(color = Fire_Int_Groups)) +
+  geom_smooth(aes(color = Fire_Int_Groups)) +
+  facet_grid(Continent ~ Dominance)
+
+#Very few 2nd & 3rd dominant. Combine to one
+
+bryo_dom$Dominance <- fct_collapse(
+  bryo_dom$base,
+  Dominant_bryophyte_1 = "Dominant_bryophyte_1",
+  Dominant_bryophyte_2 = c("Dominant_bryophyte_2", "Dominant_bryophyte_3")
+)
+
+bryo_mod <- glmmTMB(
+  coverstd ~ 
+    ns(Years_since_fire, df = 2) * Fire_Int_Groups * Dominance +
+    Continent +
+    Temp_sc +
+    (1 | StudyID / RowID),      # random intercept for study
+  family = beta_family(link = "logit"),
+  data = bryo_dom,
+  dispformula = ~ Dominance,
+  weights = weight_sc
+)
+
+AIC_vals <- AIC(bryo_mod, bryo_mod2)
+AIC_vals$delta <- AIC_vals$AIC - min(AIC_vals$AIC)
+AIC_vals
+
+simres <- simulateResiduals(bryo_mod)
+plot(simres)
+
+bryo_dom$pred <- predict(bryo_mod, type = "response")
+plot(bryo_dom$pred, bryo_dom$coverstd,
+     xlab = "Predicted coverstd",
+     ylab = "Observed coverstd")
+abline(0,1, col="red")
+
+summary(bryo_mod)
+Anova(bryo_mod, type = 'III')
+
+
+#Plot predictions!
+bryo_pred <- emmeans(
+  bryo_mod,
+  ~ Years_since_fire | Dominance* Fire_Int_Groups * Continent,
+  at = list(
+    Years_since_fire = seq(
+      min(bryo_dom$Years_since_fire, na.rm = TRUE),
+      max(bryo_dom$Years_since_fire, na.rm = TRUE),
+      length.out = 40
+    ),
+    # Per_sc = mean(bryo_dom$Per_sc, na.rm = TRUE)
+    Temp_sc = mean(bryo_dom$Temp_sc, na.rm = TRUE)
+  )
+)
+
+pred_grid_bryo <- as.data.frame(summary(bryo_pred, infer = TRUE))
+
+pred_grid_bryo <- pred_grid_bryo %>%
+  mutate(
+    fit   = plogis(emmean),
+    lower = plogis(asymp.LCL),
+    upper = plogis(asymp.UCL)
+  )
+
+pred_grid_bryo$Fire_Int_Groups <- factor(
+  pred_grid_bryo$Fire_Int_Groups,
+  levels = c("High", "Medium", "Low")
+)
+
+predmossplot <- ggplot(pred_grid_bryo,
+                       aes(x = Years_since_fire,
+                           y = fit,
+                           color = Fire_Int_Groups)) +
+  geom_ribbon(aes(ymin = lower, ymax = upper, fill = Fire_Int_Groups),
+              alpha = 0.2, color = NA, show.legend = FALSE) +
+  geom_line(linewidth = 1.2) +
+  scale_color_manual(values = c("firebrick", "goldenrod", "cornflowerblue")) + 
+  scale_fill_manual(values = c("firebrick", "goldenrod", "cornflowerblue")) + 
+  labs(
+    x = "Years since fire",
+    y = "Predicted cover",
+    color = "Fire intensity"
+  ) +
+  facet_grid(Continent ~ Dominance,
+             labeller = labeller(
+               Dominance = c("Dominant_bryophyte_1" = "Most dominant sp.",
+                             "Dominant_bryophyte_2" = "Second most dominant sp.",
+               "Dominant_bryophyte_3" = "Third most dominant sp."),
+               Continent = c(
+                 "Eurasia" = "Eurasia",
+                 "North_America" = "North America"
+               ))) +
+  scale_x_continuous(limits = c(1,10), n.breaks = 6) +
+  theme_bw() +
+  ggtitle("Bryophytes")+
+  theme(legend.position="none",
+        legend.text=element_text(size=16),
+        legend.title=element_text(size=18),
+        legend.direction='vertical',
+        axis.title.x = element_text(size = 18),
+        axis.title.y = element_blank(),
+        axis.text = element_text(size = 14),
+        strip.text = element_text(size=16),
+        panel.grid.minor = element_blank(), 
+        panel.grid.major = element_blank(),
+        plot.title = element_text(size = 18, hjust = 0.5),
+        strip.background = element_rect(fill = "white", colour = "NA"))
+
+predmossplot
+
+ggsave(plot = predmossplot, filename = "Pred_moss_plot.png", dpi =300,
+       height = 4.2, width = 6.5)
+
+#Combinedplot
+
+combinedplot_tree <- predtreeplot_NA/(predtreeplot_EU|predshrubplot)
+combinedplot_tree
+
+combinedplot_ground <-  (predherbplot|preddwarfplot)/(predgramplot|predmossplot)
+combinedplot_ground
+
+ggsave(plot=combinedplot_ground, filename = "coverplots_ground.png", dpi =300,
+       height = 10.52, width = 19.5)
+ggsave(plot=combinedplot_tree, filename = "coverplots_tree.png", dpi =300,
+       height = 10.52, width = 16.25)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#Where models come to die
+
+#Best gls models on summed cover 0-100 for sum of all three dominance levels
+herbmod <- gls(
+  log(TotalCover) ~
+    poly(Years_since_fire, 3) * Fire_Int_Groups * Continent +
+    poly(Temp_sc, 3) +
+    poly(Per_sc, 2),
+  data = herbs_dom,
+  correlation = corCompSymm(form = ~ 1 | StudyID),
+  weights     = varExp(form = ~ weight_sc),
+  method      = "REML"
+)
+
+dwarfmod <- gls(
+  log(TotalCover) ~
+    poly(Years_since_fire, 3) * Fire_Int_Groups * Continent +
+    poly(Temp_sc, 2) +
     poly(Per_sc, 3),
-  data = grass_dom,
+  data = dwarf_dom,
   correlation = corCompSymm(form = ~ 1 | StudyID),
   weights     = varPower(form = ~ weight_sc),
   method      = "REML"
 )
 
-AIC_vals <- AIC(grassmod, grassmod2)
-AIC_vals$delta <- AIC_vals$AIC - min(AIC_vals$AIC)
-AIC_vals
 
+
+#Old prediction code (for gls())
 mod_fixed <- update(grassmod, weights = varFixed(~ 1 / weight_sc), method = "ML")
 mod_power <- update(grassmod, weights = varPower(form = ~ weight_sc), method = "ML")
 mod_exp   <- update(grassmod, weights = varExp(form = ~ weight_sc), method = "ML")
@@ -1240,9 +1969,9 @@ pred_grid_grass$Fire_Int_Groups <- factor(
 )
 
 predgramplot <- ggplot(pred_grid_grass,
-                        aes(x = Years_since_fire,
-                            y = fit,
-                            color = Fire_Int_Groups)) +
+                       aes(x = Years_since_fire,
+                           y = fit,
+                           color = Fire_Int_Groups)) +
   geom_ribbon(aes(ymin = lower, ymax = upper, fill = Fire_Int_Groups),
               alpha = 0.2, color = NA, show.legend = FALSE) +
   geom_line(linewidth = 1.2) +
@@ -1274,70 +2003,63 @@ predgramplot <- ggplot(pred_grid_grass,
         plot.title = element_text(size = 18, hjust = 0.5),
         strip.background = element_rect(fill = "white", colour = "NA")) 
 
-predgramplot
+summed_cover <- df_long %>%
+  group_by(across(-c(base, species, cover, coverstd))) %>%
+  summarize(
+    TotalCover = sum(cover),
+    .groups = "drop"
+  )
 
-ggsave(plot = predgramplot, filename = "Pred_gram_plot.png", dpi =300,
-       height = 4.2, width = 6.5)
+herbs_dom <- summed_cover %>%
+  filter(PlantGroup == "herb")
 
-####
-#Trees
 
-tree_dom <- summed_cover %>%
-  filter(PlantGroup == "tree")
-
-tree_dom <- tree_dom %>%
-  filter(!is.na(TotalCover))
-
-ggplot(tree_dom, aes(x = Years_since_fire)) +
-  geom_histogram(aes(fill = Fire_Int_Groups)) +
-  facet_wrap(~Continent)
-
-treemod <- gls(
+herbmod <- gls(
   log(TotalCover) ~
-    poly(Years_since_fire, 2) +
-    Fire_Int_Groups * Continent +
-    poly(Temp_sc, 3),
-  data = tree_dom,
+    poly(Years_since_fire, 3) * Fire_Int_Groups * Continent +
+    poly(Temp_sc, 3) +
+    poly(Per_sc, 2),
+  data = herbs_dom,
   correlation = corCompSymm(form = ~ 1 | StudyID),
   weights     = varExp(form = ~ weight_sc),
-  method      = "REML"
+  method      = "ML"
 )
 
-
-AIC_vals <- AIC(treemod, treemod2)
+AIC_vals <- AIC(herbmod, herbmod2)
 AIC_vals$delta <- AIC_vals$AIC - min(AIC_vals$AIC)
 AIC_vals
 
-mod_fixed <- update(treemod, weights = varFixed(~ 1 / weight_sc), method = "ML")
-mod_power <- update(treemod, weights = varPower(form = ~ weight_sc), method = "ML")
-mod_exp   <- update(treemod, weights = varExp(form = ~ weight_sc), method = "ML")
+
+mod_fixed <- update(herbmod, weights = varFixed(~ 1 / weight_sc), method = "ML")
+mod_power <- update(herbmod, weights = varPower(form = ~ weight_sc), method = "ML")
+mod_exp   <- update(herbmod, weights = varExp(form = ~ weight_sc), method = "ML")
 AIC(mod_fixed, mod_power, mod_exp)
 
-qqnorm(resid(treemod, type = "normalized"))
-qqline(resid(treemod, type = "normalized"))
-plot(treemod, resid(., type = "normalized") ~ fitted(.))
-summary(treemod)
-Anova(treemod, type = 'III')
+qqnorm(resid(herbmod, type = "normalized"))
+qqline(resid(herbmod, type = "normalized"))
+plot(herbmod, resid(., type = "normalized") ~ fitted(.))
+summary(herbmod)
+Anova(herbmod, type = 'III')
 
 #Plot predictions!
-tree_pred <- emmeans(
-  treemod,
+herb_pred <- emmeans(
+  herbmod,
   ~ Years_since_fire | Fire_Int_Groups * Continent,
   at = list(
     Years_since_fire = seq(
-      min(tree_dom$Years_since_fire, na.rm = TRUE),
-      max(tree_dom$Years_since_fire, na.rm = TRUE),
+      min(herbs_dom$Years_since_fire, na.rm = TRUE),
+      max(herbs_dom$Years_since_fire, na.rm = TRUE),
       length.out = 40
     ),
-#    Per_sc = mean(tree_dom$Per_sc, na.rm = TRUE),
-    Temp_sc = mean(tree_dom$Temp_sc, na.rm = TRUE)
+    Per_sc = mean(herbs_dom$Per_sc, na.rm = TRUE),
+    Temp_sc = mean(herbs_dom$Temp_sc, na.rm = TRUE)
   ),
   weights = 'proportional'
 )
 
-pred_grid_tree <- as.data.frame(tree_pred)
+pred_grid_herb <- as.data.frame(herb_pred)
 
-pred_grid_tree <- pred_grid_tree %>%
+pred_grid_herb <- pred_grid_herb %>%
   mutate(
     fit   = exp(emmean),
     lower = exp(lower.CL),
@@ -1345,12 +2067,12 @@ pred_grid_tree <- pred_grid_tree %>%
   )
 
 
-pred_grid_tree$Fire_Int_Groups <- factor(
-  pred_grid_tree$Fire_Int_Groups,
+pred_grid_herb$Fire_Int_Groups <- factor(
+  pred_grid_herb$Fire_Int_Groups,
   levels = c("High", "Medium", "Low")
 )
 
-predtreeplot <- ggplot(pred_grid_tree,
+predherbplot <- ggplot(pred_grid_herb,
                        aes(x = Years_since_fire,
                            y = fit,
                            color = Fire_Int_Groups)) +
@@ -1371,8 +2093,7 @@ predtreeplot <- ggplot(pred_grid_tree,
   ) +
   scale_x_continuous(limits = c(1,10), n.breaks = 6) +
   theme_bw() +
-  ggtitle("Trees")+
-  scale_y_continuous(limits = c(0,200)) +
+  ggtitle("Graminoids")+
   theme(legend.position="none",
         legend.text=element_text(size=16),
         legend.title=element_text(size=18),
@@ -1384,237 +2105,16 @@ predtreeplot <- ggplot(pred_grid_tree,
         panel.grid.minor = element_blank(), 
         panel.grid.major = element_blank(),
         plot.title = element_text(size = 18, hjust = 0.5),
-        strip.background = element_rect(fill = "white", colour = "NA"))
+        strip.background = element_rect(fill = "white", colour = "NA")) 
 
-predtreeplot
+predherbplot
 
-ggsave(plot = predtreeplot, filename = "Pred_tree_plot.png", dpi =300,
-       height = 4.2, width = 6.5)
-
-
-#####
-#Shrubs
-
-shrubs_dom <- df_long %>%
-  filter(base == "Dominant_shrub_1")
-
-shrubs_dom <- shrubs_dom %>%
-  filter(!is.na(coverstd))
-
-#Only data from one study in Europe. Use only NA for shrub model
-shrubs_dom <- shrubs_dom %>%
-  filter(! Continent %in% "Eurasia")
-
-shrubmod <- glmmTMB(
-  coverstd ~
-    Fire_Int_Groups * Years_since_fire,
-  family = beta_family(),
-  # dispformula = ~ Fire_Int_Groups,
-  data = shrubs_dom
-)
-
-sim_res <- simulateResiduals(fittedModel = shrubmod, n = 500)
-plot(sim_res)
-testDispersion(sim_res)
-testQuantiles(sim_res)
-plotResiduals(sim_res, shrubs_dom$Years_since_fire)
-plotResiduals(sim_res, shrubs_dom$Fire_Int_Groups)
-
-
-summary(shrubmod)
-Anova(shrubmod, type = 'III')
-
-#Plot predictions!
-pred_grid <- expand.grid(
-  Years_since_fire = seq(
-    min(shrubs_dom$Years_since_fire, na.rm = TRUE),
-    max(shrubs_dom$Years_since_fire, na.rm = TRUE),
-    length.out = 88
-  ),
-  Fire_Int_Groups = levels(shrubs_dom$Fire_Int_Groups)
-) 
-
-#type = response ok?
-pred <- predict(
-  shrubmod,
-  newdata = pred_grid,
-  type = "link",
-  se.fit = TRUE,
-  re.form = NA,
-  allow.new.levels = TRUE
-)
-
-eta <- pred$fit
-se  <- pred$se.fit
-
-lower_eta <- eta - 1.96 * se
-upper_eta <- eta + 1.96 * se
-
-# inverse link = plogis for beta regression
-pred_grid$fit   <- plogis(eta)
-pred_grid$lower <- plogis(lower_eta)
-pred_grid$upper <- plogis(upper_eta)
-
-pred_grid$Fire_Int_Groups <- factor(
-  pred_grid$Fire_Int_Groups,
-  levels = c("High", "Medium", "Low")
-)
-
-predshrubplot<- ggplot(pred_grid,
-                       aes(x = Years_since_fire,
-                           y = fit,
-                           color = Fire_Int_Groups)) +
-  geom_line(linewidth = 1.2) +
-  geom_ribbon(aes(ymin = lower, ymax = upper, fill = Fire_Int_Groups),
-              alpha = 0.2, color = NA, show.legend = FALSE) +
-  scale_color_manual(values = c("firebrick", "goldenrod", "cornflowerblue")) + 
-  scale_fill_manual(values = c("firebrick", "goldenrod", "cornflowerblue")) + 
-  labs(
-    x = "Time since fire (years)",
-    y = "Predicted shrub cover",
-    color = "Fire intensity"
-  ) +
-  theme_bw() +
-  ggtitle("Shrubs")+
-  theme(legend.position="none",
-        legend.text=element_text(size=16),
-        legend.title=element_text(size=18),
-        legend.direction='vertical',
-        axis.title.x = element_blank(),
-        axis.title.y = element_blank(),
-        axis.text = element_text(size = 14),
-        strip.text = element_text(size=16),
-        panel.grid.minor = element_blank(), 
-        panel.grid.major = element_blank(),
-        plot.title = element_text(size = 18, hjust = 0.5)) 
-
-predshrubplot
-
-ggsave(plot = predshrubplot, filename = "Pred_shrub_plot.png", dpi =300,
-       height = 4.2, width = 6.5)
-
-#####
-#Mosses
-bryo_dom <- df_long %>%
-  filter(base == "Dominant_bryophyte_1")
-
-bryo_dom <- bryo_dom %>%
-  filter(!is.na(coverstd))
-
-bryomod <- glmmTMB(
-  coverstd ~
-    Fire_Int_Groups * Years_since_fire +
-    Fire_Int_Groups * Continent +
-    Years_since_fire * Continent,
-  family = beta_family(),
-  dispformula = ~ Years_since_fire,
-  data = bryo_dom
-)
-
-sim_res <- simulateResiduals(fittedModel = bryomod, n = 500)
-plot(sim_res)
-testDispersion(sim_res)
-testQuantiles(sim_res)
-plotResiduals(sim_res, bryo_dom$Years_since_fire)
-plotResiduals(sim_res, bryo_dom$Fire_Int_Groups)
-plotResiduals(sim_res, bryo_dom$Continent)
-
-summary(bryomod)
-Anova(bryomod, type = 'III')
-
-#Plot predictions!
-pred_grid <- expand.grid(
-  Years_since_fire = seq(
-    min(bryo_dom$Years_since_fire, na.rm = TRUE),
-    max(bryo_dom$Years_since_fire, na.rm = TRUE),
-    length.out = 88
-  ),
-  Fire_Int_Groups = levels(bryo_dom$Fire_Int_Groups),
-  Continent = levels(bryo_dom$Continent)
-) 
-
-#type = response ok?
-pred <- predict(
-  bryomod,
-  newdata = pred_grid,
-  type = "link",
-  se.fit = TRUE,
-  re.form = NA,
-  allow.new.levels = TRUE
-)
-
-eta <- pred$fit
-se  <- pred$se.fit
-
-lower_eta <- eta - 1.96 * se
-upper_eta <- eta + 1.96 * se
-
-# inverse link = plogis for beta regression
-pred_grid$fit   <- plogis(eta)
-pred_grid$lower <- plogis(lower_eta)
-pred_grid$upper <- plogis(upper_eta)
-
-pred_grid$Fire_Int_Groups <- factor(
-  pred_grid$Fire_Int_Groups,
-  levels = c("High", "Medium", "Low")
-)
-
-predmossplot<- ggplot(pred_grid,
-                      aes(x = Years_since_fire,
-                          y = fit,
-                          color = Fire_Int_Groups)) +
-  geom_line(linewidth = 1.2) +
-  facet_wrap(~ Continent,
-             labeller = labeller(
-               Continent = c(
-                 "Eurasia" = "Eurasia",
-                 "North_America" = "North America"))) +
-  geom_ribbon(aes(ymin = lower, ymax = upper, fill = Fire_Int_Groups),
-              alpha = 0.2, color = NA, show.legend = FALSE) +
-  scale_color_manual(values = c("firebrick", "goldenrod", "cornflowerblue")) + 
-  scale_fill_manual(values = c("firebrick", "goldenrod", "cornflowerblue")) + 
-  labs(
-    x = "Time since fire (years)",
-    y = "Predicted moss cover",
-    color = "Fire intensity"
-  ) +
-  theme_bw() +
-  ggtitle("Bryophytes")+
-  theme(legend.position="none",
-        legend.text=element_text(size=16),
-        legend.title=element_text(size=18),
-        legend.direction='vertical',
-        axis.title.x = element_text(size=18),
-        axis.title.y = element_blank(),
-        axis.text = element_text(size = 14),
-        strip.text = element_text(size=16),
-        panel.grid.minor = element_blank(), 
-        panel.grid.major = element_blank(),
-        plot.title = element_text(size = 18, hjust = 0.5)) 
-
-predmossplot
-
-ggsave(plot = predmossplot, filename = "Pred_moss_plot.png", dpi =300,
-       height = 4.2, width = 6.5)
-
-#Combinedplot
-
-combinedplot <- (predtreeplot|predshrubplot)/(predherbplot|preddwarfplot)/(predgramplot|predmossplot)
-combinedplot
-
-ggsave(plot=combinedplot, filename = "coverplots_combined.png", dpi =300,
-       height = 10.52, width = 13)
-
-
-#Where models come to die
-
-#Best gls models on summed cover 0-100 for all three dominance levels
-herbmod <- gls(
+treemod <- gls(
   log(TotalCover) ~
-    poly(Years_since_fire, 3) * Fire_Int_Groups * Continent +
-    poly(Temp_sc, 3) +
-    poly(Per_sc, 2),
-  data = herbs_dom,
+    poly(Years_since_fire, 2) +
+    Fire_Int_Groups * Continent +
+    poly(Temp_sc, 3),
+  data = tree_dom,
   correlation = corCompSymm(form = ~ 1 | StudyID),
   weights     = varExp(form = ~ weight_sc),
   method      = "REML"
