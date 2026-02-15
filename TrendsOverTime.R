@@ -5,6 +5,12 @@ library(ggeffects)
 library(patchwork)
 library(nlme)
 library(emmeans)
+library(splines)
+library(MASS)
+library(glmmTMB)
+library(DHARMa)
+library(ordinal)
+library(nnet)
 
 rm(list=ls())
 
@@ -1170,6 +1176,8 @@ traits_bryo_df <- traits_bryo_df %>%
 #Normalize studysize for better model fit
 traits_bryo_df$weight_sc <- traits_bryo_df$studysize / mean(traits_bryo_df$studysize)
 
+traits_bryo_df <- traits_bryo_df %>%
+  filter(Years_since_fire >= 1, Years_since_fire <= 10)
 
 #Calculate community weighted means
 bryo.cwm <-   # New dataframe where we can inspect the result
@@ -1187,36 +1195,37 @@ ggplot(bryo.cwm, aes( x = log(Length_cwm))) +
 
 #Length
 
+ggplot(bryo.cwm, aes( x = Years_since_fire, y = Length_cwm)) +
+  geom_point(aes(color = Fire_Int_Groups))+
+  geom_smooth(aes(color = Fire_Int_Groups)) +
+  facet_wrap(~Continent)
+
 Length_mod <- gls(
-  log(Len) ~
-    Continent +
-    Years_since_fire +
-    poly(Temp_sc, 3),
-  data = traits_bryo_df,
+  log(Length_cwm) ~
+    ns(Years_since_fire, df = 2) * Fire_Int_Groups +
+    Continent + 
+    Temp_sc,
+  data = bryo.cwm,
   correlation = corCompSymm(form = ~ 1 | StudyID.x),
-  weights     = varPower(form = ~ weight_sc),
+  weights     = varFixed(~ I(1 / weight_sc)),
+  method      = "ML"
+)
+
+Length_mod <- gls(
+  log(Length_cwm) ~
+    Fire_Int_Groups * Continent +
+    ns(Years_since_fire, df = 3) * Continent +
+    ns(Per_sc, df = 3),
+  data = bryo.cwm,
+  correlation = corCompSymm(form = ~ 1 | StudyID.x),
+  weights     = varFixed(~ I(1 / weight_sc)),
   method      = "REML"
 )
 
-Length_mod2 <- gls(
-  log(Len) ~
-    Continent +
-    Years_since_fire +
-    poly(Temp_sc, 3),
-  data = traits_bryo_df,
-  correlation = corCompSymm(form = ~ 1 | StudyID.x),
-  weights     = varPower(form = ~ weight_sc),
-  method      = "ML"
-)
 
 AIC_vals <- AIC(Length_mod, Length_mod2)
 AIC_vals$delta <- AIC_vals$AIC - min(AIC_vals$AIC)
 AIC_vals
-
-mod_fixed <- update(Length_mod, weights = varFixed(~ 1 / weight_sc), method = "ML")
-mod_power <- update(Length_mod, weights = varPower(form = ~ weight_sc), method = "ML")
-mod_exp   <- update(Length_mod, weights = varExp(form = ~ weight_sc), method = "ML")
-AIC(mod_fixed, mod_power, mod_exp)
 
 qqnorm(resid(Length_mod, type = "normalized"))
 qqline(resid(Length_mod, type = "normalized"))
@@ -1228,15 +1237,14 @@ Anova(Length_mod, type = 'III')
 #Plot predictions!
 emm_length <- emmeans(
   Length_mod,
-  ~ Years_since_fire | Continent,
+  ~ Years_since_fire | Continent * Fire_Int_Groups,
   at = list(
     Years_since_fire = seq(
-      min(traits_bryo_df$Years_since_fire, na.rm = TRUE),
-      max(traits_bryo_df$Years_since_fire, na.rm = TRUE),
+      min(bryo.cwm$Years_since_fire, na.rm = TRUE),
+      max(bryo.cwm$Years_since_fire, na.rm = TRUE),
       length.out = 40
     ),
-    Temp_sc = mean(traits_bryo_df$Temp_sc, na.rm = TRUE)
-  ),
+    Temp_sc = mean(bryo.cwm$Temp_sc, na.rm = TRUE)),
   weights = 'proportional'
 )
 
@@ -1257,10 +1265,13 @@ pred_grid_length$Fire_Int_Groups <- factor(
 
 mosslength_plot <- ggplot(pred_grid_length,
                              aes(x = Years_since_fire,
-                                 y = fit)) +
-  geom_ribbon(aes(ymin = lower, ymax = upper),
+                                 y = fit,
+                                 color = Fire_Int_Groups)) +
+  geom_ribbon(aes(ymin = lower, ymax = upper, fill = Fire_Int_Groups),
               alpha = 0.2, color = NA, show.legend = FALSE) +
   geom_line(linewidth = 1.2) +
+  scale_color_manual(values = c("firebrick", "goldenrod", "cornflowerblue")) + 
+  scale_fill_manual(values = c("firebrick", "goldenrod", "cornflowerblue")) +
   facet_wrap(~ Continent,
              labeller = labeller(
                Continent = c(
@@ -1271,6 +1282,7 @@ mosslength_plot <- ggplot(pred_grid_length,
     y = "mm"
   ) +
   theme_bw() +
+  scale_y_continuous(limits = c(0,330))+
   scale_x_continuous(limits = c(1,10), n.breaks = 6)+
   ggtitle("Leafy shoot length")+
   theme(legend.position="right",
@@ -1288,3 +1300,268 @@ mosslength_plot <- ggplot(pred_grid_length,
 
 
 mosslength_plot
+
+#Sporophyte
+
+ggplot(traits_bryo_df, aes(x = Sporophyte_frequency, fill = Primary_lifeform)) +
+  geom_bar(position = "dodge")
+
+traits_bryo_df$Sporophyte_frequency <- ordered(
+  traits_bryo_df$Sporophyte_frequency
+)
+
+ord_mod <- clmm(
+  Sporophyte_frequency ~
+    Years_since_fire * Continent * Fire_Int_Groups +
+    Temp_sc +
+    (1 | StudyID.x),
+  data = traits_bryo_df,
+  Hess = TRUE
+)
+
+
+AIC_vals <- AIC(ord_mod, ord_mod2)
+AIC_vals$delta <- AIC_vals$AIC - min(AIC_vals$AIC)
+AIC_vals
+
+nominal_test(ord_mod)
+
+summary(ord_mod)
+
+
+
+#Plot predictions!
+emm_ord <- emmeans(
+  ord_mod,
+  ~ Years_since_fire | Continent * Fire_Int_Groups,
+  at = list(
+    Years_since_fire = seq(
+      min(traits_bryo_df$Years_since_fire, na.rm = TRUE),
+      max(traits_bryo_df$Years_since_fire, na.rm = TRUE),
+      length.out = 40
+    ),
+    Continent = unique(traits_bryo_df$Continent),
+    Fire_Int_Groups = c("High", "Medium", "Low"),
+    Temp_sc = mean(traits_bryo_df$Temp_sc, na.rm = TRUE),
+    StudyID.x = NA)  # set to NA or leave random effect at zero
+)
+
+pred_grid_ord <- as.data.frame(emm_ord)
+
+
+# 2. Extract thresholds from clmm model
+alpha <- ord_mod$alpha
+alpha_names <- names(alpha)
+
+# 3. Convert emmean (linear predictor) to cumulative probabilities
+cumprob <- sapply(pred_grid_ord$emmean, function(eta) plogis(alpha - eta))
+cumprob <- t(cumprob)  # rows = observations, cols = thresholds
+colnames(cumprob) <- alpha_names
+
+# 4. Convert cumulative probabilities to category probabilities
+# P1 = cumprob1, P2 = cumprob2 - cumprob1, P3 = 1 - cumprob2
+prob_mat <- cbind(
+  cumprob[,1],
+  cumprob[,2] - cumprob[,1],
+  1 - cumprob[,2]
+)
+colnames(prob_mat) <- c("Rare", "Occasional", "Frequent")
+
+
+# 5. Combine with prediction grid
+pred_long <- cbind(pred_grid_ord, prob_mat) %>%
+  pivot_longer(
+    cols = c("Rare", "Occasional", "Frequent"),
+    names_to = "Sporophyte_frequency",
+    values_to = "Probability"
+  )
+
+# 6. Plot
+mossord_plot <- ggplot(pred_long,
+       aes(x = Years_since_fire,
+           y = Probability,
+           color = Sporophyte_frequency,
+           fill = Sporophyte_frequency)) +
+  geom_ribbon(aes(ymin = 0, ymax = Probability), alpha = 0.1, color = NA) +
+  geom_line(linewidth = 1.2) +
+  facet_grid(Continent ~ Fire_Int_Groups,
+             labeller = labeller(
+               Continent = c(
+                 "Eurasia" = "Eurasia",
+                 "North_America" = "North America"
+               )
+             )) +
+  scale_color_manual(values = c("black", "#E69F00", "#009E73")) +
+  scale_fill_manual(values = c("black", "#E69F00", "#009E73")) +
+  labs(x = "Years since fire", y = "Predicted probability") +
+  theme_bw() +
+  scale_x_continuous(limits = c(1,10), n.breaks = 6)+
+  ggtitle("Sporophyte frequency")+
+  theme(legend.position="right",
+        legend.text=element_text(size=16),
+        legend.title=element_blank(),
+        legend.direction='vertical',
+        axis.title.x = element_blank(),
+        axis.title.y = element_text(size = 16),
+        axis.text = element_text(size = 14),
+        strip.text = element_text(size=16),
+        panel.grid.minor = element_blank(), 
+        panel.grid.major = element_blank(),
+        plot.title = element_text(size = 18, hjust = 0.5),
+        strip.background = element_rect(fill = "white", colour = "NA")) 
+
+mossord_plot
+
+
+
+##Primary lifeform
+
+ggplot(traits_bryo_df, aes(x = Primary_lifeform, y = Years_since_fire)) +
+  geom_point() +
+  facet_grid(Fire_Int_Groups~Continent)
+
+nom_mod <- multinom(
+  Primary_lifeform ~
+    Years_since_fire +
+    Fire_Int_Groups +
+    Per_sc,
+  data = traits_bryo_df,
+  Hess = TRUE,
+  trace = FALSE
+)
+
+nom_mod2 <- multinom(
+  Primary_lifeform ~
+    Years_since_fire +
+    Fire_Int_Groups +
+    Per_sc,
+  data = traits_bryo_df,
+  Hess = TRUE, 
+  trace = FALSE
+)
+
+nom_brms <- brm(
+  formula = Primary_lifeform ~ 
+    Years_since_fire + 
+    Fire_Int_Groups + 
+    Per_sc + 
+    (1 | StudyID.x),
+  data = traits_bryo_df,
+  family = categorical(link = "logit"),  # nominal multinomial
+  cores = 4,      # adjust to your CPU
+  iter = 4000,    # increase if model is slow to converge
+  warmup = 1000,
+  chains = 4,
+  seed = 123
+)
+
+nom_brms2 <- brm(
+  formula = Primary_lifeform ~ 
+    Years_since_fire * 
+    Fire_Int_Groups + 
+    Per_sc + 
+    (1 | StudyID.x),
+  moment_match = TRUE,
+  data = traits_bryo_df,
+  family = categorical(link = "logit"),  # nominal multinomial
+  cores = 4,      # adjust to your CPU
+  iter = 4000,    # increase if model is slow to converge
+  warmup = 1000,
+  chains = 4,
+  seed = 123
+)
+
+loo1 <- loo(nom_brms)
+loos2 <- loo(nom_brms2)
+
+loo_compare(loo1, loos2)
+pp_check(nom_brms, type = "bars")
+pp_check(nom_brms2, type = "bars")
+
+summary(nom_brms)
+
+
+
+#Plot predictions!
+pred_grid_nom <- expand.grid(
+  Years_since_fire = seq(
+    min(traits_bryo_df$Years_since_fire, na.rm = TRUE),
+    max(traits_bryo_df$Years_since_fire, na.rm = TRUE),
+    length.out = 40
+  ),
+  Continent = unique(traits_bryo_df$Continent),
+  Fire_Int_Groups = c("High", "Medium", "Low"),
+  Per_sc = mean(traits_bryo_df$Per_sc, na.rm = TRUE),  # optional covariates
+  StudyID.x = NA  # population-level predictions; remove random effect
+)
+
+# Population-level predicted probabilities
+pred_probs_nom <- fitted(
+  nom_brms,
+  newdata = pred_grid_nom,
+  re_formula = NA  # ignores random effects
+)
+
+pred_probs_df <- as.data.frame(pred_probs_nom)
+colnames(pred_probs_df)
+
+pred_long_life <- cbind(pred_grid_nom, pred_probs_nom) %>%
+  pivot_longer(
+    cols = c("Estimate.P(Y = Mat)", "Estimate.P(Y = Tuft)",
+             "Estimate.P(Y = Weft)"),
+    names_to = "Primary_lifeform",
+    values_to = "Probability"
+  )
+
+
+library(ggplot2)
+
+ggplot(pred_long_life,
+       aes(x = Years_since_fire,
+           y = Probability,
+           color = Primary_lifeform,
+           fill = Primary_lifeform)) +
+  geom_ribbon(aes(ymin = 0, ymax = Probability), alpha = 0.2, color = NA) +
+  geom_line(linewidth = 1.2) +
+  facet_wrap(~ Continent + Fire_Int_Groups) +
+  scale_color_manual(values = c("firebrick", "goldenrod", "cornflowerblue")) +
+  scale_fill_manual(values = c("firebrick", "goldenrod", "cornflowerblue")) +
+  labs(x = "Years since fire", y = "Predicted probability") +
+  theme_bw()
+
+
+# 6. Plot
+mossnom_plot <- ggplot(pred_long,
+                       aes(x = Years_since_fire,
+                           y = Probability,
+                           color = Sporophyte_frequency,
+                           fill = Sporophyte_frequency)) +
+  geom_ribbon(aes(ymin = 0, ymax = Probability), alpha = 0.1, color = NA) +
+  geom_line(linewidth = 1.2) +
+  facet_grid(Continent ~ Fire_Int_Groups,
+             labeller = labeller(
+               Continent = c(
+                 "Eurasia" = "Eurasia",
+                 "North_America" = "North America"
+               )
+             )) +
+  scale_color_manual(values = c("black", "#E69F00", "#009E73")) +
+  scale_fill_manual(values = c("black", "#E69F00", "#009E73")) +
+  labs(x = "Years since fire", y = "Predicted probability") +
+  theme_bw() +
+  scale_x_continuous(limits = c(1,10), n.breaks = 6)+
+  ggtitle("Sporophyte frequency")+
+  theme(legend.position="right",
+        legend.text=element_text(size=16),
+        legend.title=element_blank(),
+        legend.direction='vertical',
+        axis.title.x = element_blank(),
+        axis.title.y = element_text(size = 16),
+        axis.text = element_text(size = 14),
+        strip.text = element_text(size=16),
+        panel.grid.minor = element_blank(), 
+        panel.grid.major = element_blank(),
+        plot.title = element_text(size = 18, hjust = 0.5),
+        strip.background = element_rect(fill = "white", colour = "NA")) 
+
+mossnom_plot
