@@ -1279,15 +1279,15 @@ mosslength_plot <- ggplot(pred_grid_length,
                  "North_America" = "North America"))) +
   labs(
     x = "Years since fire",
-    y = "mm"
+    y = "mm",
+    color = "Fire Intensity"
   ) +
   theme_bw() +
-  scale_y_continuous(limits = c(0,330))+
   scale_x_continuous(limits = c(1,10), n.breaks = 6)+
   ggtitle("Leafy shoot length")+
   theme(legend.position="right",
-        legend.text=element_text(size=16),
-        legend.title=element_text(size=18),
+        legend.text=element_text(size=14),
+        legend.title=element_text(size=16),
         legend.direction='vertical',
         axis.title.x = element_blank(),
         axis.title.y = element_text(size = 16),
@@ -1306,9 +1306,38 @@ mosslength_plot
 ggplot(traits_bryo_df, aes(x = Sporophyte_frequency, fill = Primary_lifeform)) +
   geom_bar(position = "dodge")
 
+#To increase data, we combine rare and occassional sporophytes
+
+traits_bryo_df$Sporophyte_frequency2 <- fct_collapse(
+  traits_bryo_df$Sporophyte_frequency,
+  Abundant = "Abundant",
+  `Occassional/Rare` = c("Ocassional", "Rare")
+)
+
 traits_bryo_df$Sporophyte_frequency <- ordered(
   traits_bryo_df$Sporophyte_frequency
 )
+
+spor_mod <- glmmTMB(Sporophyte_frequency2 ~ 
+                      Years_since_fire * Continent +
+                      Fire_Int_Groups * Continent +
+                      Temp_sc +
+                      (1|StudyID.x),
+                    family = binomial,
+                    data = traits_bryo_df)
+
+spor_mod2 <- glmmTMB(Sporophyte_frequency2 ~ 
+                      Years_since_fire * Continent +
+                       Fire_Int_Groups * Continent +
+                      Temp_sc +
+                      (1|StudyID.x),
+                    family = binomial,
+                    data = traits_bryo_df)
+
+
+AIC_vals <- AIC(spor_mod, spor_mod2)
+AIC_vals$delta <- AIC_vals$AIC - min(AIC_vals$AIC)
+AIC_vals
 
 ord_mod <- clmm(
   Sporophyte_frequency ~
@@ -1320,11 +1349,23 @@ ord_mod <- clmm(
 )
 
 
-AIC_vals <- AIC(ord_mod, ord_mod2)
-AIC_vals$delta <- AIC_vals$AIC - min(AIC_vals$AIC)
-AIC_vals
 
 nominal_test(ord_mod)
+
+nom_brms <- brm(
+  formula = Primary_lifeform ~ 
+    Years_since_fire + 
+    Fire_Int_Groups + 
+    Per_sc + 
+    (1 | StudyID.x),
+  data = traits_bryo_df,
+  family = categorical(link = "logit"),  # nominal multinomial
+  cores = 4,      # adjust to your CPU
+  iter = 4000,    # increase if model is slow to converge
+  warmup = 1000,
+  chains = 4,
+  seed = 123
+)
 
 summary(ord_mod)
 
@@ -1332,7 +1373,8 @@ summary(ord_mod)
 
 #Plot predictions!
 emm_ord <- emmeans(
-  ord_mod,
+  spor_mod,
+  type = "response",
   ~ Years_since_fire | Continent * Fire_Int_Groups,
   at = list(
     Years_since_fire = seq(
@@ -1342,12 +1384,81 @@ emm_ord <- emmeans(
     ),
     Continent = unique(traits_bryo_df$Continent),
     Fire_Int_Groups = c("High", "Medium", "Low"),
-    Temp_sc = mean(traits_bryo_df$Temp_sc, na.rm = TRUE),
-    StudyID.x = NA)  # set to NA or leave random effect at zero
+    Temp_sc = mean(traits_bryo_df$Temp_sc, na.rm = TRUE)
 )
 
-pred_grid_ord <- as.data.frame(emm_ord)
+pred_grid_spor <- as.data.frame(emm_ord)
 
+pred_grid_spor <- pred_grid_spor %>%
+  mutate(
+    Probability   = prob,
+    lower = exp(asymp.LCL),
+    upper = exp(asymp.UCL)
+  )
+
+pred_grid_spor <- pred_grid_spor %>%
+  mutate(
+    Probability_Rare = Probability,
+    Probability_Abundant = 1 - Probability
+  )
+
+pred_grid_long <- pred_grid_spor %>%
+  pivot_longer(
+    cols = c(Probability_Abundant, Probability_Rare),
+    names_to = "Sporophyte_frequency",
+    values_to = "Probability_new"
+  ) 
+
+
+pred_grid_long$Fire_Int_Groups <- factor(
+  pred_grid_long$Fire_Int_Groups,
+  levels = c("High", "Medium", "Low")
+)
+
+pred_grid_long <- pred_grid_long %>%
+  mutate(
+    Sporophyte_frequency = case_when(
+      Sporophyte_frequency == "Probability_Abundant" ~ "Abundant",
+      Sporophyte_frequency == "Probability_Rare" ~ "Occassional/Rare"
+    )
+  )
+
+mossspor_plot <- ggplot(pred_grid_long,
+                       aes(x = Years_since_fire,
+                           y = Probability_new,
+                           color = Sporophyte_frequency,
+                           fill = Sporophyte_frequency)) +
+  geom_ribbon(aes(ymin = 0, ymax = Probability_new), alpha = 0.1, color = NA) +
+  geom_line(linewidth = 1.2) +
+  facet_grid(Continent ~ Fire_Int_Groups,
+             labeller = labeller(
+               Continent = c(
+                 "Eurasia" = "Eurasia",
+                 "North_America" = "North America"
+               )
+             )) +
+  scale_color_manual(values = c("black", "#E69F00")) +
+  scale_fill_manual(values = c("black", "#E69F00")) +
+  labs(x = "Years since fire", y = "Predicted probability",
+       color = "Sporophyte frequency",
+       fill = "Sporophyte frequency") +
+  theme_bw() +
+  scale_x_continuous(limits = c(1,10), n.breaks = 6)+
+  ggtitle("Fire intensity")+
+  theme(legend.position="right",
+        legend.text=element_text(size=14),
+        legend.title=element_text(size=16),
+        legend.direction='vertical',
+        axis.title.x = element_blank(),
+        axis.title.y = element_text(size = 16),
+        axis.text = element_text(size = 14),
+        strip.text = element_text(size=16),
+        panel.grid.minor = element_blank(), 
+        panel.grid.major = element_blank(),
+        plot.title = element_text(size = 18, hjust = 0.5),
+        strip.background = element_rect(fill = "white", colour = "NA"))
+
+mossspor_plot
 
 # 2. Extract thresholds from clmm model
 alpha <- ord_mod$alpha
@@ -1393,13 +1504,15 @@ mossord_plot <- ggplot(pred_long,
              )) +
   scale_color_manual(values = c("black", "#E69F00", "#009E73")) +
   scale_fill_manual(values = c("black", "#E69F00", "#009E73")) +
-  labs(x = "Years since fire", y = "Predicted probability") +
+  labs(x = "Years since fire", y = "Predicted probability",
+       color = "Sporophyte frequency",
+       fill = "Sporophyte frequency") +
   theme_bw() +
   scale_x_continuous(limits = c(1,10), n.breaks = 6)+
-  ggtitle("Sporophyte frequency")+
+  ggtitle("Fire intensity")+
   theme(legend.position="right",
-        legend.text=element_text(size=16),
-        legend.title=element_blank(),
+        legend.text=element_text(size=14),
+        legend.title=element_text(size=16),
         legend.direction='vertical',
         axis.title.x = element_blank(),
         axis.title.y = element_text(size = 16),
@@ -1419,26 +1532,6 @@ mossord_plot
 ggplot(traits_bryo_df, aes(x = Primary_lifeform, y = Years_since_fire)) +
   geom_point() +
   facet_grid(Fire_Int_Groups~Continent)
-
-nom_mod <- multinom(
-  Primary_lifeform ~
-    Years_since_fire +
-    Fire_Int_Groups +
-    Per_sc,
-  data = traits_bryo_df,
-  Hess = TRUE,
-  trace = FALSE
-)
-
-nom_mod2 <- multinom(
-  Primary_lifeform ~
-    Years_since_fire +
-    Fire_Int_Groups +
-    Per_sc,
-  data = traits_bryo_df,
-  Hess = TRUE, 
-  trace = FALSE
-)
 
 nom_brms <- brm(
   formula = Primary_lifeform ~ 
@@ -1513,49 +1606,33 @@ pred_long_life <- cbind(pred_grid_nom, pred_probs_nom) %>%
     values_to = "Probability"
   )
 
+pred_long_life$Primary_lifeform <- factor(
+  pred_long_life$Primary_lifeform,
+  levels = c("Estimate.P(Y = Mat)", "Estimate.P(Y = Tuft)", "Estimate.P(Y = Weft)"),
+  labels = c("Mat", "Tuft", "Weft")
+)
 
-library(ggplot2)
-
-ggplot(pred_long_life,
+primlife_plot <- ggplot(pred_long_life,
        aes(x = Years_since_fire,
            y = Probability,
            color = Primary_lifeform,
            fill = Primary_lifeform)) +
   geom_ribbon(aes(ymin = 0, ymax = Probability), alpha = 0.2, color = NA) +
   geom_line(linewidth = 1.2) +
-  facet_wrap(~ Continent + Fire_Int_Groups) +
-  scale_color_manual(values = c("firebrick", "goldenrod", "cornflowerblue")) +
-  scale_fill_manual(values = c("firebrick", "goldenrod", "cornflowerblue")) +
-  labs(x = "Years since fire", y = "Predicted probability") +
-  theme_bw()
-
-
-# 6. Plot
-mossnom_plot <- ggplot(pred_long,
-                       aes(x = Years_since_fire,
-                           y = Probability,
-                           color = Sporophyte_frequency,
-                           fill = Sporophyte_frequency)) +
-  geom_ribbon(aes(ymin = 0, ymax = Probability), alpha = 0.1, color = NA) +
-  geom_line(linewidth = 1.2) +
-  facet_grid(Continent ~ Fire_Int_Groups,
-             labeller = labeller(
-               Continent = c(
-                 "Eurasia" = "Eurasia",
-                 "North_America" = "North America"
-               )
-             )) +
+  facet_wrap( ~ Fire_Int_Groups) +
   scale_color_manual(values = c("black", "#E69F00", "#009E73")) +
   scale_fill_manual(values = c("black", "#E69F00", "#009E73")) +
-  labs(x = "Years since fire", y = "Predicted probability") +
+  labs(x = "Years since fire", y = "Predicted probability",
+       color = "Primary lifeform",
+       fill = "Primary lifeform") +
   theme_bw() +
   scale_x_continuous(limits = c(1,10), n.breaks = 6)+
-  ggtitle("Sporophyte frequency")+
+  ggtitle("Fire intensity")+
   theme(legend.position="right",
-        legend.text=element_text(size=16),
-        legend.title=element_blank(),
+        legend.text=element_text(size=14),
+        legend.title=element_text(size=16),
         legend.direction='vertical',
-        axis.title.x = element_blank(),
+        axis.title.x = element_text(size = 16),
         axis.title.y = element_text(size = 16),
         axis.text = element_text(size = 14),
         strip.text = element_text(size=16),
@@ -1564,4 +1641,10 @@ mossnom_plot <- ggplot(pred_long,
         plot.title = element_text(size = 18, hjust = 0.5),
         strip.background = element_rect(fill = "white", colour = "NA")) 
 
-mossnom_plot
+mossplots <-  mosslength_plot / mossspor_plot / primlife_plot +
+  plot_layout(heights = c(1, 2, 1))
+
+mossplots
+
+ggsave(mossplots, filename = "mossplots.png", height = 12.67,
+       width = 13, dpi = 300)
