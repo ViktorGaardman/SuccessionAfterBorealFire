@@ -3,14 +3,14 @@ library(tidyverse)
 library(car)
 library(ggeffects)
 library(patchwork)
-library(nlme)
+#library(nlme)
 library(lme4)
 library(emmeans)
 library(splines)
 library(glmmTMB)
 library(DHARMa)
 library(ordinal)
-library(nnet)
+#library(nnet)
 library(brms)
 
 rm(list=ls())
@@ -295,99 +295,33 @@ ggplot(ground.cwm, aes(x = Years_since_fire, y = Mass_cwm)) +
   facet_wrap( ~Continent)
 
 #SEEDMASS
-Seed_mass_mod <- gls(
-  log(Mass_cwm) ~
-    Years_since_fire * Fire_Int_Groups +
-    Years_since_fire * Continent +
-    Per_sc +
-    ns(Temp_sc, df= 3),
-  data = ground.cwm,
-  correlation = corCompSymm(form = ~ 1 | StudyID),
-  weights     = varFixed( ~ 1 / area_sc),
-  method      = "ML"
-)
 
-
-table(ground.cwm$Continent, ground.cwm$Fire_Int_Groups, ground.cwm$Years_since_fire)
-
-#lmm
-
-seed_mass_mod_lm <- lmer( log(Mass_cwm) ~
-                            Years_since_fire * Continent * Fire_Int_Groups +
+seed_mass_mod_lm <- glmmTMB(log(Mass_cwm) ~
+                              Continent  *
+                              Years_since_fire *
+                              Fire_Int_Groups +
                             (1 | StudyID),
                           data = ground.cwm,
-                          weights = area_sc
+                          weights = area_sc,
+                          dispformula = ~ Continent + Fire_Int_Groups + Years_since_fire
 )
 
-
-seed_mass_mod2_lm <- lmer(log(Mass_cwm) ~
-                            Years_since_fire * Continent +
-                            Continent * Fire_Int_Groups +
-                            Years_since_fire * Fire_Int_Groups +
-                            (1 | StudyID),
-                         data = ground.cwm,
-                         weights = area_sc,
-                         REML = FALSE
+seed_mass_mod_lm2 <- glmmTMB(log(Mass_cwm) ~
+                               Years_since_fire * Fire_Int_Groups *
+                               Continent    +
+                              (1 | StudyID),
+                            data = ground.cwm,
+                            weights = area_sc,
+                            dispformula = ~ Continent + Fire_Int_Groups + Years_since_fire
 )
 
-AIC_vals <- AIC(seed_mass_mod_lm, seed_mass_mod2_lm)
+AIC_vals <- AIC(seed_mass_mod_lm, seed_mass_mod_lm2)
 AIC_vals$delta <- AIC_vals$AIC - min(AIC_vals$AIC)
 AIC_vals
 
-diag_mass <- ground.cwm %>%
-  ungroup() %>%
-  mutate(
-    fitted_cond = fitted(seed_mass_mod_lm),                 # conditional fitted values
-    resid_raw   = resid(seed_mass_mod_lm),                  # raw residuals
-    resid_pear  = resid(seed_mass_mod_lm, type = "pearson"),
-    weight      = seed_mass_mod_lm@resp$weights             # prior weights
-  )
-
-#Pearson residuals ()
-ggplot(diag_mass, aes(fitted_cond, resid_pear)) +
-  geom_point(alpha = 0.6) +
-  geom_hline(yintercept = 0, linetype = "dashed") +
-  labs(
-    x = "Fitted values (conditional)",
-    y = "Pearson residuals",
-    title = "Residuals vs Fitted"
-  ) +
-  theme_minimal()
-
-#Add size of weights
-ggplot(diag_mass, aes(fitted_cond, resid_pear, size = weight)) +
-  geom_point(alpha = 0.5) +
-  geom_hline(yintercept = 0, linetype = "dashed") +
-  scale_size_continuous(guide = "none") +
-  theme_minimal()
-
-#Weight groups
-diag_mass %>%
-  mutate(weight_bin = ntile(weight, 4)) %>%
-  ggplot(aes(fitted_cond, resid_pear)) +
-  geom_point(alpha = 0.6) +
-  geom_hline(yintercept = 0, linetype = "dashed") +
-  facet_wrap(~ weight_bin) +
-  theme_minimal()
-
-#Weight accounted homogeneity
-ggplot(diag_mass, aes(sample = resid_pear)) +
-  stat_qq() +
-  stat_qq_line() +
-  labs(title = "QQ plot of Pearson residuals") +
-  theme_minimal()
-
-plot(Seed_mass_mod, resid(., type = "normalized") ~ fitted(.))
-qqnorm(resid(Seed_mass_mod, type = "normalized"))
-qqline(resid(Seed_mass_mod, type = "normalized"))
-plot(
-  log(ground_sub_cwm$studysize),
-  abs(resid(Seed_mass_mod, type = "normalized"))
-)
-
-intervals(Seed_mass_mod)$corStruct #Shows we should keep studyId.x in the model
-
-summary(Seed_mass_mod)
+summary(seed_mass_mod_lm)
+plotResiduals(res, ground.cwm$Continent)
+plotResiduals(res, ground.cwm$Fire_Int_Groups)
 Anova(seed_mass_mod_lm, type = 'III')
 
 
@@ -401,8 +335,6 @@ emm_sm <- emmeans(
       max(ground.cwm$Years_since_fire, na.rm = TRUE),
       length.out = 40
     )
-#    Temp_sc = mean(ground.cwm$Temp_sc, na.rm = TRUE),
-#    Per_sc  = mean(ground.cwm$Per_sc, na.rm = TRUE)
   ),
   weights = "proportional"
 )
@@ -425,10 +357,10 @@ pred_grid_sm$Fire_Int_Groups <- factor(
 )
 
 seedmassplot <- ggplot(pred_grid_sm,
-                      aes(x = Years_since_fire,
-                          y = fit,
-                          color = Fire_Int_Groups)) +
-    geom_ribbon(aes(ymin = lower, ymax = upper, fill = Fire_Int_Groups),
+                       aes(x = Years_since_fire,
+                           y = fit,
+                           color = Fire_Int_Groups)) +
+  geom_ribbon(aes(ymin = lower, ymax = upper, fill = Fire_Int_Groups),
               alpha = 0.2, color = NA, show.legend = FALSE) +
   geom_line(linewidth = 1.2) +
   scale_color_manual(values = c("firebrick", "goldenrod", "cornflowerblue")) + 
@@ -476,73 +408,27 @@ ggplot(ground.cwm, aes(x = Years_since_fire, y = Height_cwm,
   geom_smooth(aes(color = Fire_Int_Groups))+
   facet_wrap(~Continent)
 
-Plant_height_mod <- gls(
-  log(Height_cwm) ~
-    ns(Years_since_fire, df = 2) * Fire_Int_Groups *
-    Continent +
-    ns(Temp_sc, df = 3) +
-    ns(Per_sc, df = 3),
-  data = ground.cwm,
-  correlation = corCompSymm(form = ~ 1 | StudyID),
-  weights     = varFixed(~ 1 / area_sc),
-  method      = "REML"
+Height_mod_lm <- glmmTMB(  log(Height_cwm) ~
+                             Years_since_fire * Fire_Int_Groups *
+                             Continent + 
+                         Temp_sc +
+                          (1 | StudyID),
+                        data = ground.cwm,
+                        weights = area_sc
 )
 
-Height_mod_lm <- lmer(  log(Height_cwm) ~
-                          ns(Years_since_fire, df = 2) * Fire_Int_Groups * Continent +
-                          ns(Temp_sc, df = 3) +
-                              (1 | StudyID),
-                            data = ground.cwm,
-                            weights = area_sc
+Height_mod_lm2 <- glmmTMB(  log(Height_cwm) ~
+                             ns(Years_since_fire, df = 2) * Fire_Int_Groups *
+                              Continent +
+                             Temp_sc +
+                             (1 | StudyID),
+                           data = ground.cwm,
+                           weights = area_sc
 )
-
 
 AIC_vals <- AIC(Height_mod_lm, Height_mod_lm2)
 AIC_vals$delta <- AIC_vals$AIC - min(AIC_vals$AIC)
 AIC_vals
-
-diag_height <- ground.cwm %>%
-  ungroup() %>%
-  mutate(
-    fitted_cond = fitted(Height_mod_lm),                 # conditional fitted values
-    resid_raw   = resid(Height_mod_lm),                  # raw residuals
-    resid_pear  = resid(Height_mod_lm, type = "pearson"),
-    weight      = Height_mod_lm@resp$weights             # prior weights
-  )
-
-#Pearson residuals ()
-ggplot(diag_height, aes(fitted_cond, resid_pear)) +
-  geom_point(alpha = 0.6) +
-  geom_hline(yintercept = 0, linetype = "dashed") +
-  labs(
-    x = "Fitted values (conditional)",
-    y = "Pearson residuals",
-    title = "Residuals vs Fitted"
-  ) +
-  theme_minimal()
-
-#Add size of weights
-ggplot(diag_height, aes(fitted_cond, resid_pear, size = weight)) +
-  geom_point(alpha = 0.5) +
-  geom_hline(yintercept = 0, linetype = "dashed") +
-  scale_size_continuous(guide = "none") +
-  theme_minimal()
-
-#Weight groups
-diag_height %>%
-  mutate(weight_bin = ntile(weight, 4)) %>%
-  ggplot(aes(fitted_cond, resid_pear)) +
-  geom_point(alpha = 0.6) +
-  geom_hline(yintercept = 0, linetype = "dashed") +
-  facet_wrap(~ weight_bin) +
-  theme_minimal()
-
-#Weight accounted homogeneity
-ggplot(diag_nitro, aes(sample = resid_pear)) +
-  stat_qq() +
-  stat_qq_line() +
-  labs(title = "QQ plot of Pearson residuals") +
-  theme_minimal()
 
 summary(Height_mod_lm)
 Anova(Height_mod_lm, type = 'III')
@@ -557,9 +443,7 @@ emm_ph <- emmeans(
       min(ground.cwm$Years_since_fire, na.rm = TRUE),
       max(ground.cwm$Years_since_fire, na.rm = TRUE),
       length.out = 40
-    ),
-    Temp_sc = mean(ground.cwm$Temp_sc, na.rm = TRUE)
-#    Per_sc = mean(ground.cwm$Per_sc, na.rm = TRUE)
+    )
   ), weights = "proportional"
 )
 
@@ -580,9 +464,9 @@ pred_grid_ph$Fire_Int_Groups <- factor(
 )
 
 plantheightplot <- ggplot(pred_grid_ph,
-                      aes(x = Years_since_fire,
-                          y = fit,
-                          color = Fire_Int_Groups)) +
+                          aes(x = Years_since_fire,
+                              y = fit,
+                              color = Fire_Int_Groups)) +
   geom_ribbon(aes(ymin = lower, ymax = upper, fill = Fire_Int_Groups),
               alpha = 0.2, color = NA, show.legend = FALSE) +
   facet_wrap(~ Continent,
@@ -599,7 +483,7 @@ plantheightplot <- ggplot(pred_grid_ph,
     color = "Fire intensity"
   ) +
   theme_bw() +
-#  scale_y_continuous(limits = c(0,1))+
+  #  scale_y_continuous(limits = c(0,1))+
   scale_x_continuous(limits = c(1,10), 
                      n.breaks = 6)+
   ggtitle("Plant height")+
@@ -623,17 +507,6 @@ ggsave(plot = plantheightplot, filename = "Plantheight_ground.png", dpi =300,
        height = 4.2, width = 6.5)
 
 #Leaf nitrogen
-Leaf_nitrogen_mod <- gls(
-  log(Nitrogen_cwm) ~
-    Fire_Int_Groups * Continent +
-    Years_since_fire * Continent +
-    poly(Temp_sc, 3) +
-    Per_sc,
-  data = ground_sub_cwm,
-  correlation = corCompSymm(form = ~ 1 | StudyID.x),
-  weights     = varPower(form = ~ studysize),
-  method      = "REML"
-)
 
 ggplot(ground.cwm, aes(x = Years_since_fire, y = Nitrogen_cwm, 
                        by = Fire_Int_Groups))+
@@ -641,69 +514,23 @@ ggplot(ground.cwm, aes(x = Years_since_fire, y = Nitrogen_cwm,
   geom_smooth(aes(color = Fire_Int_Groups))+
   facet_wrap(~Continent)
 
-Nitro_mod_lm <- lmer(log(Nitrogen_cwm) ~
-                       ns(Years_since_fire, df = 2) * Fire_Int_Groups * Continent +
-                       ns(Temp_sc, df = 3) +
+Nitro_mod_lm <- glmmTMB(log(Nitrogen_cwm) ~
+                       Years_since_fire * Fire_Int_Groups * Continent +
+                       (1 | StudyID),
+                     weights = area_sc,
+                     data = ground.cwm
+)
+
+Nitro_mod_lm2 <- glmmTMB(log(Nitrogen_cwm) ~
+                        Years_since_fire * Fire_Int_Groups * Continent +
                         (1 | StudyID),
                       weights = area_sc,
                       data = ground.cwm
 )
 
-Nitro_mod_lm2 <- lmer(log(Nitrogen_cwm) ~
-                       Years_since_fire * Fire_Int_Groups * Continent +
-#                        ns(Temp_sc, df = 3) +
-                       (1 | StudyID),
-                     weights = area_sc,
-                     data = ground.cwm,
-                     REML = FALSE
-)
-
 AIC_vals <- AIC(Nitro_mod_lm, Nitro_mod_lm2)
 AIC_vals$delta <- AIC_vals$AIC - min(AIC_vals$AIC)
 AIC_vals
-
-diag_nitro <- ground.cwm %>%
-  ungroup() %>%
-  mutate(
-    fitted_cond = fitted(Nitro_mod_lm),                 # conditional fitted values
-    resid_raw   = resid(Nitro_mod_lm),                  # raw residuals
-    resid_pear  = resid(Nitro_mod_lm, type = "pearson"),
-    weight      = Nitro_mod_lm@resp$weights             # prior weights
-  )
-
-#Pearson residuals ()
-ggplot(diag_nitro, aes(fitted_cond, resid_pear)) +
-  geom_point(alpha = 0.6) +
-  geom_hline(yintercept = 0, linetype = "dashed") +
-  labs(
-    x = "Fitted values (conditional)",
-    y = "Pearson residuals",
-    title = "Residuals vs Fitted"
-  ) +
-  theme_minimal()
-
-#Add size of weights
-ggplot(diag_nitro, aes(fitted_cond, resid_pear, size = weight)) +
-  geom_point(alpha = 0.5) +
-  geom_hline(yintercept = 0, linetype = "dashed") +
-  scale_size_continuous(guide = "none") +
-  theme_minimal()
-
-#Weight groups
-diag_nitro %>%
-  mutate(weight_bin = ntile(weight, 4)) %>%
-  ggplot(aes(fitted_cond, resid_pear)) +
-  geom_point(alpha = 0.6) +
-  geom_hline(yintercept = 0, linetype = "dashed") +
-  facet_wrap(~ weight_bin) +
-  theme_minimal()
-
-#Weight accounted homogeneity
-ggplot(diag_nitro, aes(sample = resid_pear)) +
-  stat_qq() +
-  stat_qq_line() +
-  labs(title = "QQ plot of Pearson residuals") +
-  theme_minimal()
 
 summary(Nitro_mod_lm)
 Anova(Nitro_mod_lm, type = 'III')
@@ -717,8 +544,7 @@ emm_ln <- emmeans(
       min(ground.cwm$Years_since_fire, na.rm = TRUE),
       max(ground.cwm$Years_since_fire, na.rm = TRUE),
       length.out = 40
-    ),
-    Temp_sc = mean(ground.cwm$Temp_sc, na.rm = TRUE)
+    )
   ),
   weights = 'proportional'
 )
@@ -739,9 +565,9 @@ pred_grid_ln$Fire_Int_Groups <- factor(
 )
 
 leafnitrogenplot<- ggplot(pred_grid_ln,
-                         aes(x = Years_since_fire,
-                             y = fit,
-                             color = Fire_Int_Groups)) +
+                          aes(x = Years_since_fire,
+                              y = fit,
+                              color = Fire_Int_Groups)) +
   geom_ribbon(aes(ymin = lower, ymax = upper, fill = Fire_Int_Groups),
               alpha = 0.2, color = NA, show.legend = FALSE) +
   geom_line(linewidth = 1.2) +
@@ -781,84 +607,37 @@ ggsave(plot = leafnitrogenplot, filename = "LEafnitrogen_ground.png", dpi =300,
 
 #Leaf_area
 
-Leaf_area_mod <- gls(
-  log(Area_cwm) ~
-    Years_since_fire +
-    Fire_Int_Groups * Continent +
-    poly(Temp_sc, 3),
-  data = ground_sub_cwm,
-  correlation = corCompSymm(form = ~ 1 | StudyID.x),
-  weights     = varPower(form = ~ studysize),
-  method      = "REML"
-)
+ggplot(ground.cwm, aes(x = Years_since_fire, y = Area_cwm, 
+                       by = Fire_Int_Groups))+
+  geom_point(aes(color= Fire_Int_Groups))+
+  geom_smooth(aes(color = Fire_Int_Groups))+
+  facet_wrap(~Continent)
 
-area_mod_lm_old <- lmer(log(Area_cwm) ~ 
-                      ns(Years_since_fire, df = 2) +
-                      Fire_Int_Groups * Continent +
-                      ns(Temp_sc, df = 3) +
-                          (1 | StudyID),
-                        weights = area_sc,
-                        data = ground.cwm
-)
-
-area_mod_lm <- lmer(log(Area_cwm) ~ 
-                      Fire_Int_Groups * Continent +
+area_mod_lm <- glmmTMB(log(Area_cwm) ~ 
+                      Fire_Int_Groups * Continent *
                       Years_since_fire +
-                      ns(Temp_sc, df = 3) +
-                          (1 | StudyID),
-                        weights = area_sc,
-                        data = ground.cwm
+                      (1 | StudyID),
+                    weights = area_sc,
+                    data = ground.cwm,
+                    dispformula = ~ Continent
 )
 
-AIC_vals <- AIC(area_mod_lm, area_mod_lm_2)
+area_mod_lm2 <- glmmTMB(log(Area_cwm) ~ 
+                         Fire_Int_Groups * Continent *
+                         Years_since_fire +
+                         (1 | StudyID),
+                       weights = area_sc,
+                       data = ground.cwm,
+                       dispformula = ~ Continent
+)
+
+
+AIC_vals <- AIC(area_mod_lm, area_mod_lm2)
 AIC_vals$delta <- AIC_vals$AIC - min(AIC_vals$AIC)
 AIC_vals
 
 summary(area_mod_lm)
 Anova(area_mod_lm, type = 'III')
-
-diag_area <- ground.cwm %>%
-  ungroup() %>%
-  mutate(
-    fitted_cond = fitted(area_mod_lm),                 # conditional fitted values
-    resid_raw   = resid(area_mod_lm),                  # raw residuals
-    resid_pear  = resid(area_mod_lm, type = "pearson"),
-    weight      = area_mod_lm@resp$weights             # prior weights
-  )
-
-#Pearson residuals ()
-ggplot(diag_area, aes(fitted_cond, resid_pear)) +
-  geom_point(alpha = 0.6) +
-  geom_hline(yintercept = 0, linetype = "dashed") +
-  labs(
-    x = "Fitted values (conditional)",
-    y = "Pearson residuals",
-    title = "Residuals vs Fitted"
-  ) +
-  theme_minimal()
-
-#Add size of weights
-ggplot(diag_area, aes(fitted_cond, resid_pear, size = weight)) +
-  geom_point(alpha = 0.5) +
-  geom_hline(yintercept = 0, linetype = "dashed") +
-  scale_size_continuous(guide = "none") +
-  theme_minimal()
-
-#Weight groups
-diag_area %>%
-  mutate(weight_bin = ntile(weight, 4)) %>%
-  ggplot(aes(fitted_cond, resid_pear)) +
-  geom_point(alpha = 0.6) +
-  geom_hline(yintercept = 0, linetype = "dashed") +
-  facet_wrap(~ weight_bin) +
-  theme_minimal()
-
-#Weight accounted homogeneity
-ggplot(diag_area, aes(sample = resid_pear)) +
-  stat_qq() +
-  stat_qq_line() +
-  labs(title = "QQ plot of Pearson residuals") +
-  theme_minimal()
 
 #Plot predictions!
 emm_la <- emmeans(
@@ -869,8 +648,7 @@ emm_la <- emmeans(
       min(ground.cwm$Years_since_fire, na.rm = TRUE),
       max(ground.cwm$Years_since_fire, na.rm = TRUE),
       length.out = 40
-    ),
-    Temp_sc = mean(ground.cwm$Temp_sc, na.rm = TRUE)
+    )
   ),
   weights = 'proportional'
 )
@@ -891,9 +669,9 @@ pred_grid_la$Fire_Int_Groups <- factor(
 )
 
 leafareaplot<- ggplot(pred_grid_la,
-                          aes(x = Years_since_fire,
-                              y = fit,
-                              color = Fire_Int_Groups)) +
+                      aes(x = Years_since_fire,
+                          y = fit,
+                          color = Fire_Int_Groups)) +
   geom_ribbon(aes(ymin = lower, ymax = upper, fill = Fire_Int_Groups),
               alpha = 0.2, color = NA, show.legend = FALSE) +
   geom_line(linewidth = 1.2) +
@@ -937,7 +715,7 @@ combinedtraitplot_ground <- (plantheightplot|seedmassplot)/
 
 combinedtraitplot_ground
 
-ggsave(plot = combinedtraitplot_ground, filename = "traitplots_ground.TIFF",
+ggsave(plot = combinedtraitplot_ground, filename = "traitplots_ground.png",
        dpi = 450, height = 8.45, width = 13)
 
 
@@ -952,7 +730,7 @@ ggsave(plot = combinedtraitplot_ground, filename = "traitplots_ground.TIFF",
 ggplot(tree.cwm, aes(x = Years_since_fire, y=log(Mass_cwm), by = Fire_Int_Groups))+
   geom_point(aes(color = Fire_Int_Groups)) + 
   geom_smooth(aes(color = Fire_Int_Groups))+
-#  scale_y_continuous(limits= c(0,)) +
+  #  scale_y_continuous(limits= c(0,)) +
   facet_wrap(~Continent)
 
 #Use only first 10 years after fire
@@ -1067,20 +845,20 @@ pred_grid_mass_NA$Fire_Int_Groups <- factor(
 )
 
 seedmassplot_NA <- ggplot(pred_grid_mass_NA,
-                      aes(x = Years_since_fire,
-                          y = fit,
-                          color = Fire_Int_Groups)) +
+                          aes(x = Years_since_fire,
+                              y = fit,
+                              color = Fire_Int_Groups)) +
   geom_ribbon(aes(ymin = lower, ymax = upper, fill = Fire_Int_Groups),
               alpha = 0.2, color = NA, show.legend = FALSE) +
   geom_line(linewidth = 1.2) +
-   scale_color_manual(values = c("firebrick", "goldenrod", "cornflowerblue")) + 
+  scale_color_manual(values = c("firebrick", "goldenrod", "cornflowerblue")) + 
   scale_fill_manual(values = c("firebrick", "goldenrod", "cornflowerblue")) + 
   labs(
     x = "Time since fire (years)",
     y = "mg",
     color = "Fire intensity"
   ) +
-#  scale_y_continuous(limits = c(0,50), n.breaks = 6) +
+  #  scale_y_continuous(limits = c(0,50), n.breaks = 6) +
   scale_x_continuous(limits = c(1,10), n.breaks = 6) +
   theme_bw() +
   ggtitle("Seed dry mass North America")+
@@ -1310,7 +1088,7 @@ emm_nitro_EU <- emmeans(
       max(treeEU$Years_since_fire, na.rm = TRUE),
       length.out = 40
     )
-#    Temp_sc = mean(treeEU$Temp_sc, na.rm = TRUE)
+    #    Temp_sc = mean(treeEU$Temp_sc, na.rm = TRUE)
   ),
   weights = 'proportional'
 )
@@ -1453,9 +1231,9 @@ pred_grid_nitro_NA$Fire_Int_Groups <- factor(
 )
 
 leafnitrogenplot_NA <- ggplot(pred_grid_nitro_NA,
-                         aes(x = Years_since_fire,
-                             y = fit,
-                             color = Fire_Int_Groups)) +
+                              aes(x = Years_since_fire,
+                                  y = fit,
+                                  color = Fire_Int_Groups)) +
   geom_ribbon(aes(ymin = lower, ymax = upper, fill = Fire_Int_Groups),
               alpha = 0.2, color = NA, show.legend = FALSE) +
   geom_line(linewidth = 1.2) +
@@ -1573,7 +1351,7 @@ emm_SLA_EU <- emmeans(
       max(treeEU$Years_since_fire, na.rm = TRUE),
       length.out = 40
     ),
-   Temp_sc = mean(treeEU$Temp_sc, na.rm = TRUE)
+    Temp_sc = mean(treeEU$Temp_sc, na.rm = TRUE)
   ),
   weights = 'proportional'
 )
@@ -1593,9 +1371,9 @@ pred_grid_SLA_EU$Intensity <- factor(
 )
 
 SLAplot_EU <- ggplot(pred_grid_SLA_EU,
-                          aes(x = Years_since_fire,
-                              y = fit,
-                              color = Intensity)) +
+                     aes(x = Years_since_fire,
+                         y = fit,
+                         color = Intensity)) +
   geom_ribbon(aes(ymin = lower, ymax = upper, fill = Intensity),
               alpha = 0.2, color = NA, show.legend = FALSE) +
   geom_line(linewidth = 1.2) +
@@ -1640,7 +1418,7 @@ SLA_mod_NA2 <- lmer(
     ns(Years_since_fire, df = 3) +
     Fire_Int_Groups +
     Temp_sc +
-  (1 | StudyID),
+    (1 | StudyID),
   weights = area_sc,
   data = treeNA,
   REML = FALSE
@@ -1727,9 +1505,9 @@ pred_grid_SLA_NA$Fire_Int_Groups <- factor(
 )
 
 SLAplot_NA <- ggplot(pred_grid_SLA_NA,
-                              aes(x = Years_since_fire,
-                                  y = fit,
-                                  color = Fire_Int_Groups)) +
+                     aes(x = Years_since_fire,
+                         y = fit,
+                         color = Fire_Int_Groups)) +
   geom_ribbon(aes(ymin = lower, ymax = upper, fill = Fire_Int_Groups),
               alpha = 0.2, color = NA, show.legend = FALSE) +
   geom_line(linewidth = 1.2) +
@@ -1929,9 +1707,9 @@ pred_grid_length$Fire_Int_Groups <- factor(
 )
 
 mosslength_plot <- ggplot(pred_grid_length,
-                             aes(x = Years_since_fire,
-                                 y = fit,
-                                 color = Fire_Int_Groups)) +
+                          aes(x = Years_since_fire,
+                              y = fit,
+                              color = Fire_Int_Groups)) +
   geom_ribbon(aes(ymin = lower, ymax = upper, fill = Fire_Int_Groups),
               alpha = 0.2, color = NA, show.legend = FALSE) +
   geom_line(linewidth = 1.2) +
@@ -1992,12 +1770,12 @@ spor_mod <- glmmTMB(Sporophyte_frequency2 ~
                     data = traits_bryo_df)
 
 spor_mod2 <- glmmTMB(Sporophyte_frequency2 ~ 
-                      Years_since_fire * Continent +
+                       Years_since_fire * Continent +
                        Fire_Int_Groups * Continent +
-                      Temp_sc +
-                      (1|StudyID.x),
-                    family = binomial,
-                    data = traits_bryo_df)
+                       Temp_sc +
+                       (1|StudyID.x),
+                     family = binomial,
+                     data = traits_bryo_df)
 
 
 AIC_vals <- AIC(spor_mod, spor_mod2)
@@ -2050,7 +1828,7 @@ emm_ord <- emmeans(
     Continent = unique(traits_bryo_df$Continent),
     Fire_Int_Groups = c("High", "Medium", "Low"),
     Temp_sc = mean(traits_bryo_df$Temp_sc, na.rm = TRUE)
-))
+  ))
 
 pred_grid_spor <- as.data.frame(emm_ord)
 
@@ -2089,10 +1867,10 @@ pred_grid_long <- pred_grid_long %>%
   )
 
 mossspor_plot <- ggplot(pred_grid_long,
-                       aes(x = Years_since_fire,
-                           y = Probability_new,
-                           color = Sporophyte_frequency,
-                           fill = Sporophyte_frequency)) +
+                        aes(x = Years_since_fire,
+                            y = Probability_new,
+                            color = Sporophyte_frequency,
+                            fill = Sporophyte_frequency)) +
   geom_ribbon(aes(ymin = 0, ymax = Probability_new), alpha = 0.1, color = NA) +
   geom_line(linewidth = 1.2) +
   facet_grid(Continent ~ Fire_Int_Groups,
@@ -2211,10 +1989,10 @@ pred_long_life$Primary_lifeform <- factor(
 )
 
 primlife_plot <- ggplot(pred_long_life,
-       aes(x = Years_since_fire,
-           y = Probability,
-           color = Primary_lifeform,
-           fill = Primary_lifeform)) +
+                        aes(x = Years_since_fire,
+                            y = Probability,
+                            color = Primary_lifeform,
+                            fill = Primary_lifeform)) +
   geom_ribbon(aes(ymin = 0, ymax = Probability), alpha = 0.2, color = NA) +
   geom_line(linewidth = 1.2) +
   facet_wrap( ~ Fire_Int_Groups) +
