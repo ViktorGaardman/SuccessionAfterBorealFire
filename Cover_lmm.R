@@ -96,7 +96,7 @@ df_long <- species_long_Perc %>%
 #Scale and center percipitation and temperature
 df_long$Temp_sc <- as.numeric(scale(df_long$Avg_Temp, center = TRUE, scale = TRUE))
 df_long$Per_sc <- as.numeric(scale(df_long$AvgPer, center = TRUE, scale = TRUE))
-
+df_long$SWI_sc <- as.numeric(scale(df_long$SWI, center = TRUE, scale = TRUE))
 
 #Create a total size of study column
 df_long <- df_long %>%
@@ -116,7 +116,7 @@ df_long <- df_long %>%
 #Sum cover per plantgroup
 summed_df <- df_long %>%
   group_by(StudyID, Years_since_fire, Fire_Int_Groups,
-          Continent, PlantGroup, Per_sc, Temp_sc, area_sc, studysize) %>%
+          Continent, PlantGroup, Per_sc, Temp_sc, SWI_sc, area_sc, studysize) %>%
   summarize(
     Total_cov = sum(cover),
       .groups = "drop"
@@ -135,29 +135,30 @@ ggplot(herb_df, aes(x = Years_since_fire, y = Total_cov)) +
   facet_wrap(~Continent)
 
 herb_mod <- glmmTMB(log(Total_cov) ~
-                      Years_since_fire * Continent +
-                      Years_since_fire * Fire_Int_Groups +
-                      Continent * Fire_Int_Groups +
+                      Years_since_fire * Continent * Fire_Int_Groups +
                       (1 | StudyID),
                     weights = area_sc,
                  data = herb_df,
                  dispformula = ~ Continent)  
 
 herb_mod2 <- glmmTMB(log(Total_cov) ~
-                       ns(Years_since_fire, df = 2) * Continent +
-                       ns(Years_since_fire, df = 2) * Fire_Int_Groups +
-                       Continent * Fire_Int_Groups +
-                       (1 | StudyID),
-                     weights = area_sc,
-                     data = herb_df,
-                     dispformula = ~ Continent)  
+                      Years_since_fire * Continent +
+                      Years_since_fire * Fire_Int_Groups +
+                      Continent * Fire_Int_Groups +
+                       SWI_sc +
+                      (1 | StudyID),
+                    weights = area_sc,
+                    data = herb_df,
+                    dispformula = ~ Continent)    
 
 AIC_vals <- AIC(herb_mod, herb_mod2)
 AIC_vals$delta <- AIC_vals$AIC - min(AIC_vals$AIC)
 AIC_vals
 
-summary(herb_mod)
-Anova(herb_mod, type = 'III')
+sum <- summary(herb_mod)
+anova <- Anova(herb_mod, type = 'III')
+
+
 
 #Plot predictions!
 herb_pred <- emmeans(
@@ -179,7 +180,7 @@ pred_grid_herb <- pred_grid_herb %>%
   mutate(
     fit   = exp(emmean),
     lower = exp(lower.CL),
-    upper = exp(upper.CL)
+    upper = pmin(exp(upper.CL), 100)
   )
 
 pred_grid_herb$Fire_Int_Groups <- factor(
@@ -237,7 +238,6 @@ ggplot(dwarf_df, aes(x = Years_since_fire, y = Total_cov)) +
 
 dwarf_mod <- glmmTMB(log(Total_cov) ~
                        Years_since_fire * Continent *Fire_Int_Groups+
-                       Temp_sc +
                       (1 | StudyID),
                     weights = area_sc,
                     dispformula = ~ Fire_Int_Groups,
@@ -245,7 +245,7 @@ dwarf_mod <- glmmTMB(log(Total_cov) ~
 
 dwarf_mod2 <- glmmTMB(log(Total_cov) ~
                        Years_since_fire * Continent *Fire_Int_Groups+
-                       Temp_sc +
+                        Temp_sc +
                        (1 | StudyID),
                      weights = area_sc,
                      dispformula = ~ Fire_Int_Groups,
@@ -267,8 +267,7 @@ dwarf_pred <- emmeans(
       min(herb_df$Years_since_fire, na.rm = TRUE),
       max(herb_df$Years_since_fire, na.rm = TRUE),
       length.out = 40
-    ),
-    Temp_sc = mean(herb_df$Temp_sc, na.rm = TRUE)
+    )
   ),
   weights = 'proportional'
 )
@@ -279,7 +278,7 @@ pred_grid_dwarf <- pred_grid_dwarf %>%
   mutate(
     fit   = exp(emmean),
     lower = exp(lower.CL),
-    upper = exp(upper.CL)
+    upper = pmin(exp(upper.CL), 100)
   )
 
 
@@ -346,9 +345,10 @@ grass_mod <- glmmTMB(log(Total_cov) ~
 
 grass_mod2 <- glmmTMB(log(Total_cov) ~
                         Years_since_fire * Continent *Fire_Int_Groups +
+                        SWI_sc+
                         (1 | StudyID),
                       weights = area_sc,
-                      dispformula = ~ Continent + Years_since_fire,
+                      dispformula = ~ Continent,
                       data = grass_df)     
 
 AIC_vals <- AIC(grass_mod, grass_mod2)
@@ -453,6 +453,7 @@ shrub_mod <- glmmTMB(log(Total_cov) ~
 
 shrub_mod2 <- glmmTMB(log(Total_cov) ~
                        Years_since_fire +
+                        SWI_sc+
                        (1 | StudyID),
                      weights = area_sc,
                      dispformula = ~ Years_since_fire,
@@ -499,6 +500,7 @@ predshrubplot <- ggplot(pred_grid_shrub,
     y = "Predicted cover"
   ) +
   scale_x_continuous(limits = c(1,10), n.breaks = 6) +
+  scale_y_continuous(limits = c(0,100), n.breaks = 5) +
   theme_bw() +
   ggtitle("Shrubs North America")+
   theme(legend.position="none",
@@ -529,19 +531,19 @@ ggplot(tree_NA, aes(x = Years_since_fire, y = Total_cov)) +
   geom_jitter(aes(color = Fire_Int_Groups))
 
 tree_mod_NA <- glmmTMB(log(Total_cov) ~
-                         ns(Years_since_fire, df = 2) +
+                         ns(Years_since_fire, df = 2) *
                          Fire_Int_Groups +
                        (1 | StudyID),
                      weights = area_sc,
-                     dispformula = ~ ns(Years_since_fire, df = 2) + Fire_Int_Groups,
+                     dispformula = ~ ns(Years_since_fire, df = 2),
                      data = tree_NA)  
 
 tree_mod_NA2 <- glmmTMB(log(Total_cov) ~
-                          ns(Years_since_fire, df = 2) +
+                          ns(Years_since_fire, df = 2) *
                           Fire_Int_Groups +
                          (1 | StudyID),
                        weights = area_sc,
-                       dispformula = ~ ns(Years_since_fire, df = 2),
+            #           dispformula = ~ ns(Years_since_fire, df = 2),
                        data = tree_NA)   
 
 AIC_vals <- AIC(tree_mod_NA, tree_mod_NA2)
@@ -586,6 +588,7 @@ predtreeplot_NA <- ggplot(tree_pred_NA,
   geom_ribbon(aes(ymin = lower, ymax = upper, fill = Fire_Int_Groups),
               alpha = 0.2, color = NA, show.legend = FALSE) +
   geom_line(linewidth = 1.2) +
+  scale_y_continuous(limits = c(0,100), n.breaks = 5) +
   scale_color_manual(values = c("firebrick", "goldenrod", "cornflowerblue")) + 
   scale_fill_manual(values = c("firebrick", "goldenrod", "cornflowerblue")) + 
   labs(
@@ -622,6 +625,9 @@ tree_EU <- summed_df %>%
 tree_EU <- tree_EU %>%
   filter(Years_since_fire >= 1, Years_since_fire <= 5)
 
+tree_EU <- tree_EU %>%
+  filter(!Fire_Int_Groups %in% "Low")
+
 #tree_EU$Intensity <- fct_collapse(
 #  tree_EU$Fire_Int_Groups,
 #  High = "High",
@@ -630,16 +636,18 @@ tree_EU <- tree_EU %>%
 
 
 tree_mod_EU <- glmmTMB(log(Total_cov) ~
-                          Years_since_fire +
-                         Intensity +
+                          Years_since_fire *
+                         Fire_Int_Groups +
                           (1 | StudyID),
                         weights = area_sc,
                         data = tree_EU)   
 
 tree_mod_EU2 <- glmmTMB(log(Total_cov) ~
-                          Years_since_fire + 
+                          Years_since_fire *
+                          Fire_Int_Groups +
                           (1 | StudyID),
                         weights = area_sc,
+                        dispformula = ~ Fire_Int_Groups,
                         data = tree_EU)   
 
 AIC_vals <- AIC(tree_mod_EU, tree_mod_EU2)
@@ -652,7 +660,7 @@ Anova(tree_mod_EU, type = 'III')
 #Plot predictions!
 tree_pred_EU <- emmeans(
   tree_mod_EU,
-  ~ Years_since_fire | Intensity,
+  ~ Years_since_fire | Fire_Int_Groups,
   at = list(
     Years_since_fire = seq(
       min(tree_EU$Years_since_fire, na.rm = TRUE),
@@ -669,36 +677,37 @@ tree_pred_EU <- tree_pred_EU %>%
   mutate(
     fit   = exp(emmean),
     lower = exp(lower.CL),
-    upper = exp(upper.CL)
+    upper = pmin(exp(upper.CL), 100)
   )
 
-tree_pred_EU$Intensity <- factor(
-  tree_pred_EU$Intensity,
-  levels = c("High", "Medium/Low")
+tree_pred_EU$Fire_Int_Groups <- factor(
+  tree_pred_EU$Fire_Int_Groups,
+  levels = c("High", "Medium")
 )
 
 predtreeplot_EU <- ggplot(tree_pred_EU,
                           aes(x = Years_since_fire,
                               y = fit,
-                              color = Intensity)) +
-  geom_ribbon(aes(ymin = lower, ymax = upper, fill = Intensity),
+                              color = Fire_Int_Groups)) +
+  geom_ribbon(aes(ymin = lower, ymax = upper, fill = Fire_Int_Groups),
               alpha = 0.2, color = NA, show.legend = FALSE) +
   geom_line(linewidth = 1.2) +
-
   labs(
     x = "Years since fire",
     y = "Predicted cover",
     color = "Fire intensity"
   ) +
-  scale_x_continuous(limits = c(1,10), n.breaks = 6) +
+  scale_x_continuous(limits = c(1,5), n.breaks = 6) +
   theme_bw() +
+  scale_color_manual(values = c("firebrick", "goldenrod")) + 
+  scale_fill_manual(values = c("firebrick", "goldenrod")) + 
   ggtitle("Trees Europe")+
-  theme(legend.position="right",
+  theme(legend.position="none",
         legend.text=element_text(size=16),
         legend.title=element_text(size=18),
         legend.direction='vertical',
-        axis.title.x = element_text(size = 18),
-        axis.title.y = element_text(size = 16),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
         axis.text = element_text(size = 14),
         strip.text = element_text(size=16),
         panel.grid.minor = element_blank(), 
@@ -729,7 +738,8 @@ moss_mod <- glmmTMB(log(Total_cov) ~
 
 moss_mod2 <- glmmTMB(log(Total_cov) ~
                        Years_since_fire * Continent *Fire_Int_Groups +
-                        (1 | StudyID),
+                        SWI_sc+ 
+                       (1 | StudyID),
                       weights = area_sc,
                       dispformula = ~ Continent + Fire_Int_Groups + Years_since_fire,
                       data = moss_df)     
@@ -761,7 +771,7 @@ pred_grid_moss <- pred_grid_moss %>%
   mutate(
     fit   = exp(emmean),
     lower = exp(lower.CL),
-    upper = exp(upper.CL)
+    upper = pmin(exp(upper.CL), 100)
   )
 
 
@@ -808,12 +818,12 @@ predmossplot <- ggplot(pred_grid_moss,
 predmossplot
 
 
-totalcoverplot <- (predtreeplot_NA|predshrubplot)/
+totalcoverplot <- (predtreeplot_NA|predtreeplot_EU|predshrubplot)/
   (predherbplot|preddwarfplot)/(predgrassplot|predmossplot)
 
 totalcoverplot
 
-ggsave(totalcoverplot, filename = "TotalCover.TIFF", 
+ggsave(totalcoverplot, filename = "TotalCover.png", 
        dpi = 450, height = 10.52, width =13)
 
 
@@ -1591,25 +1601,25 @@ NAshrubplots <- shrubNAhigh_plot / shrubNAmed_plot / shrubNAlow_plot
 NAshrubplots
 
 
-ggsave(EUherbplots, filename = "EUHerbs.png",
+ggsave(EUherbplots, filename = "EUHerbs.TIFF",
        dpi = 300, height = 10.56, width = 13)
-ggsave(NAherbplots, filename = "NAHerbs.png",
+ggsave(NAherbplots, filename = "NAHerbs.TIFF",
        dpi = 300, height = 10.56, width = 13)
-ggsave(NAdwarfplots, filename = "NAdwarf.png",
+ggsave(NAdwarfplots, filename = "NAdwarf.TIFF",
        dpi = 300, height = 10.56, width = 13)
-ggsave(EUdwarfplots, filename = "EUDwarf.png",
+ggsave(EUdwarfplots, filename = "EUDwarf.TIFF",
        dpi = 300, height = 10.56, width = 13)
-ggsave(NAgrassplots, filename = "NAGrass.png",
+ggsave(NAgrassplots, filename = "NAGrass.TIFF",
        dpi = 300, height = 10.56, width = 13)
-ggsave(EUgrassplots, filename = "EUGrasss.png",
+ggsave(EUgrassplots, filename = "EUGrasss.TIFF",
        dpi = 300, height = 10.56, width = 13)
-ggsave(NAmossplots, filename = "NAMoss.png",
+ggsave(NAmossplots, filename = "NAMoss.TIFF",
        dpi = 300, height = 10.56, width = 13)
-ggsave(EUmossplots, filename = "EUMoss.png",
+ggsave(EUmossplots, filename = "EUMoss.TIFF",
        dpi = 300, height = 10.56, width = 13)
-ggsave(EUtreeplots, filename = "EUTree.png",
+ggsave(EUtreeplots, filename = "EUTree.TIFF",
        dpi = 300, height = 10.56, width = 13)
-ggsave(NAtreeplots, filename = "NATree.png",
+ggsave(NAtreeplots, filename = "NATree.TIFF",
        dpi = 300, height = 10.56, width = 13)
-ggsave(NAshrubplots, filename = "NAShrub.png",
+ggsave(NAshrubplots, filename = "NAShrub.TIFF",
        dpi = 300, height = 10.56, width = 13)
