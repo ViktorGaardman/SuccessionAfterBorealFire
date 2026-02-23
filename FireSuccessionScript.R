@@ -305,7 +305,7 @@ seed_mass_mod_lm <- glmmTMB(log(Mass_cwm) ~
 seed_mass_mod_lm2 <- glmmTMB(log(Mass_cwm) ~
                                Years_since_fire *
                                Fire_Int_Groups  *Continent +
-                               SWI_sc +
+                               Temp_sc +
                                (1 | StudyID),
                              data = ground.cwm,
                              weights = area_sc,
@@ -805,7 +805,7 @@ combinedtraitplot_ground <- (plantheightplot|seedmassplot)/
 
 combinedtraitplot_ground
 
-ggsave(plot = combinedtraitplot_ground, filename = "traitplots_ground.TIFF",
+ggsave(plot = combinedtraitplot_ground, filename = "traitplots_ground.png",
        dpi = 450, height = 8.45, width = 13)
 
 
@@ -890,7 +890,7 @@ pred_grid_mass_NA <- pred_grid_mass_NA %>%
 
 pred_grid_mass_NA$Fire_Int_Groups <- factor(
   pred_grid_mass_NA$Fire_Int_Groups,
-  levels = c("High", "Medium", "Low")
+  levels = c("High", "Medium", "Low", "Medium/Low")
 )
 
 seedmassplot_NA <- ggplot(pred_grid_mass_NA,
@@ -900,8 +900,10 @@ seedmassplot_NA <- ggplot(pred_grid_mass_NA,
   geom_ribbon(aes(ymin = lower, ymax = upper, fill = Fire_Int_Groups),
               alpha = 0.2, color = NA, show.legend = FALSE) +
   geom_line(linewidth = 1.2) +
-  scale_color_manual(values = c("firebrick", "goldenrod", "cornflowerblue")) + 
-  scale_fill_manual(values = c("firebrick", "goldenrod", "cornflowerblue")) + 
+  scale_color_manual(values = c("firebrick", "goldenrod", "cornflowerblue", "#9F9D87"),
+                     drop = FALSE) + 
+  scale_fill_manual(values = c("firebrick", "goldenrod", "cornflowerblue", "#9F9D87"),
+                    drop = FALSE) + 
   labs(
     x = "Time since fire (years)",
     y = "mg",
@@ -1008,7 +1010,7 @@ seedmassplot_EU <- ggplot(pred_grid_mass_EU,
   scale_x_continuous(limits = c(1,10), n.breaks = 6) +
   theme_bw() +
   ggtitle("Seed dry mass Europe")+
-  theme(legend.position="left",
+  theme(legend.position="none",
         legend.text=element_text(size=16),
         legend.title=element_text(size=18),
         legend.direction='vertical',
@@ -1038,11 +1040,10 @@ nitro_mod_EU <- glmmTMB(
 
 nitro_mod_EU2 <- glmmTMB(
   log(Nitrogen_cwm) ~
-    ns(Years_since_fire, df = 2) *
+    Years_since_fire *
     Intensity +
-    SWI_sc+
     (1 | StudyID),
-  dispformula = ~ ns(Years_since_fire, df = 2),
+  dispformula = ~ Years_since_fire,
   weights = area_sc,
   data = treeEU
 )
@@ -1173,7 +1174,7 @@ pred_grid_nitro_NA <- pred_grid_nitro_NA %>%
 
 pred_grid_nitro_NA$Fire_Int_Groups <- factor(
   pred_grid_nitro_NA$Fire_Int_Groups,
-  levels = c("High", "Medium", "Low")
+  levels = c("High", "Medium", "Low", "Low/Medium")
 )
 
 leafnitrogenplot_NA <- ggplot(pred_grid_nitro_NA,
@@ -1183,8 +1184,10 @@ leafnitrogenplot_NA <- ggplot(pred_grid_nitro_NA,
   geom_ribbon(aes(ymin = lower, ymax = upper, fill = Fire_Int_Groups),
               alpha = 0.2, color = NA, show.legend = FALSE) +
   geom_line(linewidth = 1.2) +
-  scale_color_manual(values = c("firebrick", "goldenrod", "cornflowerblue")) + 
-  scale_fill_manual(values = c("firebrick", "goldenrod", "cornflowerblue")) + 
+  scale_color_manual(values = c("firebrick", "goldenrod", "cornflowerblue", "#9F9D87"),
+                     drop = FALSE) + 
+  scale_fill_manual(values = c("firebrick", "goldenrod", "cornflowerblue", "#9F9D87"),
+                    drop = FALSE) + 
   labs(
     x = "Time since fire (years)",
     y = "mg/g",
@@ -1237,7 +1240,6 @@ SLA_mod_EU2 <- glmmTMB(
     ns(Years_since_fire, df = 2) *
     Intensity +
     Temp_sc +
-    SWI_sc +
     (1 | StudyID),
   weights = area_sc,
   dispformula = ~ns(Years_since_fire, df = 2) + Intensity,
@@ -1517,7 +1519,7 @@ combinedtraitplot_tree <- (seedmassplot_EU|seedmassplot_NA)/
 
 combinedtraitplot_tree
 
-ggsave(plot = combinedtraitplot_tree, filename = "traitplot_tree.TIFF",
+ggsave(plot = combinedtraitplot_tree, filename = "traitplot_tree.png",
        dpi = 450, height = 10.52, width =13)
 
 
@@ -1539,9 +1541,6 @@ traits_bryo_df <- traits_bryo %>%
   left_join(Bryo_trait_data, by = "species")
 
 traits_bryo_df <- traits_bryo_df %>%
-  filter(!is.na(Len))
-
-traits_bryo_df <- traits_bryo_df %>%
   mutate(
     studysize = Plot_size * Sample_size
   )
@@ -1553,9 +1552,93 @@ traits_bryo_df$area_sc <- traits_bryo_df$studysize / mean(traits_bryo_df$studysi
 traits_bryo_df <- traits_bryo_df %>%
   filter(Years_since_fire >= 1, Years_since_fire <= 10)
 
+species_sp_freq_moss <- traits_bryo_df %>%
+  filter(str_detect(species, "_sp\\.$")) %>%
+  count(species, sort = TRUE)
+
+
+species_sp_freq_moss <- traits_bryo_df %>%
+  # keep only genus-level species
+  filter(str_detect(species, "_sp\\.$")) %>%
+  
+  # extract genus
+  mutate(genus = str_remove(species, "_sp\\.$")) %>%
+  
+  # count frequency
+  count(Continent, species, genus, sort = TRUE) %>%
+  
+  # for each genus, find matching full species
+  rowwise() %>%
+  mutate(
+    species_names = paste(
+      unique(
+        traits_bryo_df$species[
+          traits_bryo_df$Continent == Continent &   # match continent
+            str_detect(traits_bryo_df$species, paste0("^", genus, "_")) &
+            !str_detect(traits_bryo_df$species, "_sp\\.$")
+        ]
+      ),
+      collapse = "; "
+    )
+  ) %>%
+  ungroup() %>%
+  select(-genus)
+
+
+writexl::write_xlsx(species_sp_freq_moss, "Species_sp_freq_moss.xlsx")
+
+
+#Add average genera level trait values to species_sp
+#1. Define traits
+traits <- "Len"
+
+
+#2. Define genus/species info
+traits_bryo_df <- traits_bryo_df %>%
+  mutate(
+    genus = str_extract(species, "^[^_]+"),
+    species2 = str_extract(species, "(?<=_).+"),
+    is_genus_level = species2 %in% c("sp.", "sp")
+  )
+
+#3. Calculate genus level mean trait values for all genera
+#that has data for more than 1 species
+genus_traits <- traits_bryo_df %>%
+  filter(!is_genus_level) %>%
+  group_by(genus, Continent) %>%
+  summarise(
+    across(
+      traits,
+      ~ mean(.x, na.rm = TRUE),
+      .names = "{.col}_genus_mean"
+    ),
+    n_species = n_distinct(species2),
+    .groups = "drop"
+  ) %>%
+  filter(n_species >= 2)
+
+
+#4. Add to dataset
+traits_bryo_df_full <- traits_bryo_df %>%
+  left_join(genus_traits, by = c("genus", "Continent")) %>%
+  mutate(
+    across(
+      all_of(traits),
+      ~ if_else(
+        is_genus_level & is.na(.x),
+        get(paste0(cur_column(), "_genus_mean")),
+        .x
+      )
+    )
+  ) %>%
+  select(-ends_with("_genus_mean"))
+
+traits_bryo_df_full$species <- as.factor(traits_bryo_df_full$species)
+
+
 #Calculate community weighted means
 bryo.cwm <-   # New dataframe where we can inspect the result
-  traits_bryo_df %>%   # First step in the next string of statements
+  traits_bryo_df_full %>%   # First step in the next string of statements
   group_by(StudyID, RowID, Temp_sc, Per_sc, SWI_sc, Fire_Int_Groups,
            Years_since_fire, Continent, area_sc) %>%   # Groups the summary file by Plot number
   summarize(           # Coding for how we want our CWMs summarized
@@ -1570,7 +1653,7 @@ ggplot(bryo.cwm, aes( x = log(Length_cwm))) +
 #Length
 
 ggplot(bryo.cwm, aes( x = Years_since_fire, y = Length_cwm)) +
-  geom_point(aes(color = Fire_Int_Groups))+
+  geom_jitter(aes(color = Fire_Int_Groups))+
   geom_smooth(aes(color = Fire_Int_Groups)) +
   facet_wrap(~Continent)
 
@@ -1578,7 +1661,6 @@ Length_mod <- glmmTMB(
   log(Length_cwm) ~
     Fire_Int_Groups * Continent *
     Years_since_fire +
-    Temp_sc +
     (1 | StudyID),
   weights = area_sc,
   dispformula = ~ Fire_Int_Groups,
@@ -1589,11 +1671,9 @@ Length_mod2 <- glmmTMB(
   log(Length_cwm) ~
     Fire_Int_Groups * Continent *
     Years_since_fire +
-    Temp_sc +
-    SWI_sc +
     (1 | StudyID),
   weights = area_sc,
-  dispformula = ~ Fire_Int_Groups,
+  dispformula = ~ Continent,
   data = bryo.cwm
 )
 
@@ -1613,8 +1693,8 @@ emm_length <- emmeans(
       min(bryo.cwm$Years_since_fire, na.rm = TRUE),
       max(bryo.cwm$Years_since_fire, na.rm = TRUE),
       length.out = 40
-    ),
-    Temp_sc = mean(bryo.cwm$Temp_sc, na.rm = TRUE)),
+    )),
+#    Temp_sc = mean(bryo.cwm$Temp_sc, na.rm = TRUE)),
   weights = 'proportional'
 )
 
@@ -1674,7 +1754,8 @@ mosslength_plot
 #Sporophyte
 
 ggplot(traits_bryo_df, aes(x = Sporophyte_frequency, fill = Primary_lifeform)) +
-  geom_bar(position = "dodge")
+  geom_bar(position = "dodge") +
+  facet_grid(Fire_Int_Groups~Continent)
 
 #To increase data, we combine rare and occassional sporophytes
 
@@ -1687,7 +1768,6 @@ traits_bryo_df$Sporophyte_frequency2 <- fct_collapse(
 spor_mod <- glmmTMB(Sporophyte_frequency2 ~ 
                       Years_since_fire * 
                       Fire_Int_Groups * Continent +
-                      Temp_sc +
                       (1|StudyID),
                     family = binomial,
                     data = traits_bryo_df)
@@ -1714,11 +1794,9 @@ emm_ord <- emmeans(
       min(traits_bryo_df$Years_since_fire, na.rm = TRUE),
       max(traits_bryo_df$Years_since_fire, na.rm = TRUE),
       length.out = 40
-    ),
-    Continent = unique(traits_bryo_df$Continent),
-    Fire_Int_Groups = c("High", "Medium", "Low"),
-    Temp_sc = mean(traits_bryo_df$Temp_sc, na.rm = TRUE)
-  ))
+    )),
+  weights = 'proportional'
+  )
 
 pred_grid_spor <- as.data.frame(emm_ord)
 
@@ -1742,19 +1820,16 @@ pred_grid_long <- pred_grid_spor %>%
     values_to = "Probability_new"
   ) 
 
-
 pred_grid_long$Fire_Int_Groups <- factor(
   pred_grid_long$Fire_Int_Groups,
-  levels = c("High", "Medium", "Low")
+  levels = c("Low", "Medium", "High")
 )
 
-pred_grid_long <- pred_grid_long %>%
-  mutate(
-    Sporophyte_frequency = case_when(
-      Sporophyte_frequency == "Probability_Abundant" ~ "Abundant",
-      Sporophyte_frequency == "Probability_Rare" ~ "Occassional/Rare"
-    )
-  )
+pred_grid_long$Sporophyte_frequency <- factor(
+  pred_grid_long$Sporophyte_frequency,
+  levels = c("Probability_Abundant", "Probability_Rare"),
+  labels = c("Abundant", "Occasional/Rare")
+)
 
 mossspor_plot <- ggplot(pred_grid_long,
                         aes(x = Years_since_fire,
@@ -1773,11 +1848,11 @@ mossspor_plot <- ggplot(pred_grid_long,
   scale_color_manual(values = c("black", "#E69F00")) +
   scale_fill_manual(values = c("black", "#E69F00")) +
   labs(x = "Years since fire", y = "Predicted probability",
-       color = "Sporophyte frequency",
-       fill = "Sporophyte frequency") +
+       color = "Sporophyte frequency") +
   theme_bw() +
   scale_x_continuous(limits = c(1,10), n.breaks = 6)+
   ggtitle("Fire intensity")+
+  guides(fill = "none") +
   theme(legend.position="right",
         legend.text=element_text(size=14),
         legend.title=element_text(size=16),
@@ -1795,15 +1870,21 @@ mossspor_plot
 
 ##Primary lifeform
 
-ggplot(traits_bryo_df, aes(x = Primary_lifeform, y = Years_since_fire)) +
-  geom_point() +
-  facet_grid(Fire_Int_Groups~Continent)
+ggplot(traits_bryo_df, aes(x = Years_since_fire)) +
+  geom_bar(aes(fill = Primary_lifeform), position = "dodge") +
+  facet_grid(Continent~Fire_Int_Groups)
+
+#combine low and medium
+traits_bryo_df$Intensity <- fct_collapse(
+  traits_bryo_df$Fire_Int_Groups,
+  High = "High",
+  `Medium/Low` = c("Medium", "Low")
+)
 
 nom_brms <- brm(
   formula = Primary_lifeform ~ 
-    Years_since_fire + 
-    Fire_Int_Groups + 
-    Per_sc + 
+    Years_since_fire * 
+    Intensity * Continent + 
     (1 | StudyID),
   data = traits_bryo_df,
   family = categorical(link = "logit"),  # nominal multinomial
@@ -1813,6 +1894,10 @@ nom_brms <- brm(
   chains = 4,
   seed = 123
 )
+
+control = list(
+  max_treedepth = 15,
+  adapt_delta = 0.95)
 
 nom_brms2 <- brm(
   formula = Primary_lifeform ~ 
@@ -1849,8 +1934,7 @@ pred_grid_nom <- expand.grid(
     length.out = 40
   ),
   Continent = unique(traits_bryo_df$Continent),
-  Fire_Int_Groups = c("High", "Medium", "Low"),
-  Per_sc = mean(traits_bryo_df$Per_sc, na.rm = TRUE),  # optional covariates
+  Intensity = c("High", "Medium/Low"),
   StudyID = NA  # population-level predictions; remove random effect
 )
 
@@ -1878,6 +1962,11 @@ pred_long_life$Primary_lifeform <- factor(
   labels = c("Mat", "Tuft", "Weft")
 )
 
+pred_long_life$Intensity <- factor(
+  pred_long_life$Intensity,
+  levels = c("Medium/Low", "High")
+)
+
 primlife_plot <- ggplot(pred_long_life,
                         aes(x = Years_since_fire,
                             y = Probability,
@@ -1885,14 +1974,15 @@ primlife_plot <- ggplot(pred_long_life,
                             fill = Primary_lifeform)) +
   geom_ribbon(aes(ymin = 0, ymax = Probability), alpha = 0.2, color = NA) +
   geom_line(linewidth = 1.2) +
-  facet_wrap( ~ Fire_Int_Groups) +
+  facet_grid(Continent ~ Intensity) +
   scale_color_manual(values = c("black", "#E69F00", "#009E73")) +
   scale_fill_manual(values = c("black", "#E69F00", "#009E73")) +
   labs(x = "Years since fire", y = "Predicted probability",
-       color = "Primary lifeform",
-       fill = "Primary lifeform") +
+       color = "Primary lifeform") +
+  guides(fill = "none") +
   theme_bw() +
   scale_x_continuous(limits = c(1,10), n.breaks = 6)+
+  scale_y_continuous(limits = c(0,1), n.breaks = 5)+
   ggtitle("Fire intensity")+
   theme(legend.position="right",
         legend.text=element_text(size=14),
@@ -1910,11 +2000,11 @@ primlife_plot <- ggplot(pred_long_life,
 primlife_plot
 
 mossplots <-  mosslength_plot / mossspor_plot / primlife_plot +
-  plot_layout(heights = c(1, 2, 1))
+  plot_layout(heights = c(1, 2, 2))
 
 mossplots
 
-ggsave(mossplots, filename = "mossplots.TIFF", height = 12.67,
+ggsave(mossplots, filename = "mossplots.png", height = 12.67,
        width = 13, dpi = 450)
 
 
@@ -1929,7 +2019,8 @@ ggsave(mossplots, filename = "mossplots.TIFF", height = 12.67,
 
 
 #Sum cover per plantgroup
-summed_df <- df_long %>%
+
+summed_df <- df_filled %>%
   group_by(StudyID, Years_since_fire, Fire_Int_Groups,
            Continent, PlantGroup, Per_sc, Temp_sc, SWI_sc, area_sc, studysize) %>%
   summarize(
@@ -2533,8 +2624,13 @@ predtreeplot_EU
 
 #Mosses
 
-moss_df <- summed_df %>%
-  filter(PlantGroup == "bryophyte")
+moss_df <- traits_bryo_df %>%
+  group_by(StudyID, Years_since_fire, Fire_Int_Groups,
+           Continent, PlantGroup, Per_sc, Temp_sc, SWI_sc, area_sc, studysize) %>%
+  summarize(
+    Total_cov = sum(cover),
+    .groups = "drop"
+  )
 
 ggplot(moss_df, aes(x = Years_since_fire, y = Total_cov)) +
   geom_smooth(aes(color = Fire_Int_Groups)) +
@@ -2550,7 +2646,6 @@ moss_mod <- glmmTMB(log(Total_cov) ~
 
 moss_mod2 <- glmmTMB(log(Total_cov) ~
                        Years_since_fire * Continent *Fire_Int_Groups +
-                       SWI_sc+ 
                        (1 | StudyID),
                      weights = area_sc,
                      dispformula = ~ Continent + Fire_Int_Groups + Years_since_fire,
@@ -2569,8 +2664,8 @@ moss_pred <- emmeans(
   ~ Years_since_fire | Fire_Int_Groups * Continent,
   at = list(
     Years_since_fire = seq(
-      min(herb_df$Years_since_fire, na.rm = TRUE),
-      max(herb_df$Years_since_fire, na.rm = TRUE),
+      min(moss_df$Years_since_fire, na.rm = TRUE),
+      max(moss_df$Years_since_fire, na.rm = TRUE),
       length.out = 40
     )
   ),
@@ -2613,7 +2708,7 @@ predmossplot <- ggplot(pred_grid_moss,
                Continent = c(
                  "Eurasia" = "Eurasia",
                  "North_America" = "North America"))) +
-  ggtitle("Mosses")+
+  ggtitle("Bryophytes")+
   theme(legend.position="none",
         legend.text=element_text(size=16),
         legend.title=element_text(size=18),
@@ -2719,10 +2814,6 @@ df_sizes <- df %>%
     studysize = Plot_size * Sample_size
   )
 
-df_sizes <- df_sizes %>%
-  group_by(Years_since_fire, Fire_Int_Groups, Continent) %>%
-  summarise(SumSize = sum(studysize), .groups = "drop")
-
 df_sizes$Fire_Int_Groups <- factor(
   df_sizes$Fire_Int_Groups,
   levels = c("High", "Medium", "Low")
@@ -2768,7 +2859,7 @@ IndSizePlot
 
 Figure1Plots <- DataPlot /StudyPlot / IndSizePlot
 Figure1Plots
-ggsave(Figure1Plots, filename = "Fig1.png",
+ggsave(Figure1Plots, filename = "Fig1.TIFF",
        dpi = 300, height = 8.45, width = 13)
 
 
@@ -3004,7 +3095,7 @@ jaccardplot <- ggplot(result, aes(x = comparison, y = jaccard)) +
 richnessplots <- richnessplot / unique_plot / jaccardplot
 
 ggsave(richnessplots, filename = "Richnessplots.png",
-       dpi = 450, height=8.45, width=13)
+       dpi = 450, height=10.56, width=13)
 
 
 
@@ -3028,13 +3119,6 @@ richness_list <- df_long %>%
   arrange(Fire_Int_Groups, Continent, PlantGroup, desc(frequency))
 
 writexl::write_xlsx(richness_list, "richness_list.xlsx")  
-
-subset(df_long, Continent == "Eurasia") %>%
-  filter(PlantGroup == "dwarfshrub") %>%
-  summarise(n_unique_RowID = n_distinct(RowID))
-
-
-
 
 
 #Summary stuff
